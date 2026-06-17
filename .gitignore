@@ -1,0 +1,13 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+
+secrets.py
+config.py
+alpaca_keys.py
+settings.py
+
+.DS_Store
+Thumbs.db
+*.log
