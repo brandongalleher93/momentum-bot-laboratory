@@ -4,10 +4,13 @@ __pycache__/
 *.pyc
 
 secrets.py
-config.py
 alpaca_keys.py
-settings.py
 
 .DS_Store
 Thumbs.db
 *.log
+logs/
+output/
+.coverage
+.pytest_cache/
+.mypy_cache/
