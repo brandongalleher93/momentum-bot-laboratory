@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import IO, Optional, Sequence
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -336,29 +336,37 @@ class BacktestEngine:
 def load_bars_csv(path: Path, default_timezone: str = "America/New_York") -> list[Bar]:
     """Load timestamp,symbol,open,high,low,close,volume CSV data."""
 
+    with path.open("r", encoding="utf-8", newline="") as stream:
+        return load_bars_csv_stream(stream, default_timezone)
+
+
+def load_bars_csv_stream(
+    stream: IO[str], default_timezone: str = "America/New_York"
+) -> list[Bar]:
+    """Load backtest bars from an open text stream (including GUI uploads)."""
+
     bars: list[Bar] = []
     timezone = ZoneInfo(default_timezone)
-    with path.open("r", encoding="utf-8", newline="") as stream:
-        reader = csv.DictReader(stream)
-        required = {"timestamp", "symbol", "open", "high", "low", "close", "volume"}
-        if not required.issubset(reader.fieldnames or []):
-            missing = sorted(required - set(reader.fieldnames or []))
-            raise ValueError(f"Backtest CSV is missing columns: {', '.join(missing)}")
-        for row in reader:
-            timestamp = datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00"))
-            if timestamp.tzinfo is None:
-                timestamp = timestamp.replace(tzinfo=timezone)
-            bars.append(
-                Bar(
-                    symbol=row["symbol"].strip().upper(),
-                    timestamp=timestamp,
-                    open=Decimal(row["open"]),
-                    high=Decimal(row["high"]),
-                    low=Decimal(row["low"]),
-                    close=Decimal(row["close"]),
-                    volume=int(row["volume"]),
-                )
+    reader = csv.DictReader(stream)
+    required = {"timestamp", "symbol", "open", "high", "low", "close", "volume"}
+    if not required.issubset(reader.fieldnames or []):
+        missing = sorted(required - set(reader.fieldnames or []))
+        raise ValueError(f"Backtest CSV is missing columns: {', '.join(missing)}")
+    for row in reader:
+        timestamp = datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00"))
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone)
+        bars.append(
+            Bar(
+                symbol=row["symbol"].strip().upper(),
+                timestamp=timestamp,
+                open=Decimal(row["open"]),
+                high=Decimal(row["high"]),
+                low=Decimal(row["low"]),
+                close=Decimal(row["close"]),
+                volume=int(row["volume"]),
             )
+        )
     return bars
 
 

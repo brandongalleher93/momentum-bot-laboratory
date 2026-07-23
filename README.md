@@ -158,6 +158,51 @@ deliberate boundary: point-in-time universe membership, delisted symbols, splits
 halts, and scanner history require a separately audited dataset before portfolio-
 level results would be trustworthy.
 
+## Run the GUI command center
+
+Install the project dependencies, then launch the Streamlit dashboard:
+
+```bash
+source .venv/bin/activate
+streamlit run bot/gui.py
+```
+
+The GUI includes:
+
+- a persistent paper-mode and safety-status header
+- a backtest lab with CSV upload, the included sample, Plotly candlesticks,
+  trade markers, performance metrics, and archived run reports
+- scanner and decision-reasoning views backed by the structured audit log
+- current and archived trades
+- validated, named configuration profiles for reproducible experiments
+- searchable and downloadable logs
+- an explicit read-only Alpaca paper-account check
+
+GUI backtest runs and profiles are stored under `output/`. The browser interface
+does not host the trading engine, enable live trading, or silently connect to an
+account. Paper order submission remains controlled by the existing `.env` safety
+flag.
+
+## Historical scanner replay
+
+Every live paper scanner cycle now records its complete point-in-time universe in
+`output/history/history.sqlite3`. Rows are labeled `captured`; candidates rebuilt
+from historical bars are labeled `reconstructed`, so the two evidence qualities
+cannot be confused.
+
+Historical minute bars are cached as Parquet files under `output/history/bars/`.
+The history subsystem includes:
+
+- `HistoryStore` for scanner snapshots, data provenance, and replay runs
+- `BarCache` and `AlpacaHistoricalDownloader` for paginated SDK downloads and
+  local SIP/IEX bar caching
+- `CandidateReconstructor` for explicitly approximate historical candidate lists
+- `PortfolioReplayEngine` for chronological portfolio gates across symbols
+
+Use raw corporate-action adjustment for downloaded data and keep one feed per
+experiment. IEX remains suitable for software validation; SIP is the intended
+feed for strategy evaluation.
+
 ## Run one paper polling cycle
 
 With paper submission still disabled, this gathers data, evaluates candidates, and

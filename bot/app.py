@@ -16,6 +16,7 @@ from bot.broker import PaperBroker
 from bot.config import Settings
 from bot.diagnostics import DiagnosticFactory
 from bot.event_log import DiagnosticLogger, JsonlEventLog
+from bot.history_store import HistoryStore
 from bot.execution import ExecutionService
 from bot.exits import ExitManager
 from bot.models import Bar, MarketSnapshot, Quote, Setup
@@ -58,6 +59,7 @@ class TradingBot:
         )
         self.run_metadata = JsonlEventLog(settings.log_dir / "config_change_history.jsonl")
         self.position_events = JsonlEventLog(settings.log_dir / "position_events.jsonl")
+        self.history = HistoryStore(settings.output_dir / "history" / "history.sqlite3")
         self._started = False
         self._last_scan_minute: datetime | None = None
         self._armed_setups: dict[str, Setup] = {}
@@ -138,7 +140,11 @@ class TradingBot:
             return
         self._last_scan_minute = scan_minute
 
-        outcome = self.scanner.scan(self.market_data.get_scanner_snapshots(now))
+        scanner_snapshots = self.market_data.get_scanner_snapshots(now)
+        outcome = self.scanner.scan(scanner_snapshots)
+        self.history.record_scan(
+            scanner_snapshots, outcome.diagnostics, source="captured"
+        )
         for diagnostic in outcome.diagnostics:
             self.logger.log(diagnostic)
 
