@@ -150,12 +150,30 @@ class HistoryStore:
             )
         return len(rows)
 
-    def candidates(self, *, source: str | None = None, passed_only: bool = True) -> list[dict[str, Any]]:
+    def candidates(
+        self,
+        *,
+        source: str | None = None,
+        passed_only: bool = True,
+        symbols: Iterable[str] | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+    ) -> list[dict[str, Any]]:
         clauses, parameters = [], []
         if source:
             clauses.append("source=?"); parameters.append(source)
         if passed_only:
             clauses.append("passed=1")
+        normalized_symbols = sorted({value.strip().upper() for value in (symbols or []) if value.strip()})
+        if symbols is not None:
+            if not normalized_symbols:
+                return []
+            clauses.append(f"symbol IN ({','.join('?' for _ in normalized_symbols)})")
+            parameters.extend(normalized_symbols)
+        if start_time is not None:
+            clauses.append("datetime(timestamp)>=datetime(?)"); parameters.append(start_time.isoformat())
+        if end_time is not None:
+            clauses.append("datetime(timestamp)<=datetime(?)"); parameters.append(end_time.isoformat())
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with self.connect() as db:
             return [dict(row) for row in db.execute("SELECT * FROM scanner_snapshots" + where + " ORDER BY timestamp, rank", parameters)]

@@ -15,6 +15,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 # Streamlit executes this file with bot/ as the script directory. Ensure the
 # project package remains importable without requiring an editable install.
@@ -93,6 +94,7 @@ def _init_state(st) -> None:
     st.session_state.setdefault("account", None)
     st.session_state.setdefault("paper_cycle_output", None)
     st.session_state.setdefault("historical_bars", {})
+    st.session_state.setdefault("historical_missing_symbols", [])
     st.session_state.setdefault("portfolio_result", None)
 
 
@@ -357,6 +359,9 @@ def _historical_data(st, pd, settings: Settings) -> None:
                     paths = downloader.download(symbols, start_dt, end_dt, feed=feed, adjustment="raw")
                     grouped = {path.parent.name: BarCache.read(path) for path in paths}
                     st.session_state.historical_bars = grouped
+                    downloaded = set(grouped)
+                    missing = sorted(set(symbols) - downloaded)
+                    st.session_state.historical_missing_symbols = missing
                     st.success(f"Downloaded {len(paths)} symbol files using the {feed.upper()} feed.")
                     st.rerun()
                 except Exception as exc:
@@ -378,33 +383,115 @@ def _historical_data(st, pd, settings: Settings) -> None:
     bars_by_symbol = st.session_state.historical_bars
     if bars_by_symbol:
         st.subheader("Loaded workspace")
+        if st.session_state.historical_missing_symbols:
+            st.warning("No bars were returned for: " + ", ".join(st.session_state.historical_missing_symbols))
         rows=[{"symbol":symbol,"bars":len(bars),"start":bars[0].timestamp,"end":bars[-1].timestamp} for symbol,bars in sorted(bars_by_symbol.items())]
         st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
+        available_dates = [
+            bar.timestamp.astimezone(ZoneInfo(settings.timezone)).date()
+            for bars in bars_by_symbol.values() for bar in bars
+        ]
+        eval_cols = st.columns(2)
+        evaluation_start_date = eval_cols[0].date_input(
+            "Evaluation start",
+            value=min(available_dates),
+            min_value=min(available_dates),
+            max_value=max(available_dates),
+            help="The first trading date to score. Earlier downloaded bars remain available only as lookback history.",
+        )
+        evaluation_end_date = eval_cols[1].date_input(
+            "Evaluation end",
+            value=max(available_dates),
+            min_value=min(available_dates),
+            max_value=max(available_dates),
+            help="The last trading date to score.",
+        )
+        local_zone = ZoneInfo(settings.timezone)
+        evaluation_start = datetime.combine(evaluation_start_date, time.min, tzinfo=local_zone).astimezone(timezone.utc)
+        evaluation_end = datetime.combine(evaluation_end_date, time.max, tzinfo=local_zone).astimezone(timezone.utc)
+        if evaluation_end_date < evaluation_start_date:
+            st.error("Evaluation end must be on or after evaluation start.")
         spread = st.number_input("Estimated reconstructed spread (%)",min_value=0.01,max_value=5.0,value=0.50,step=0.05)
         a,b=st.columns(2)
-        if a.button("Reconstruct candidate history",use_container_width=True):
+        invalid_evaluation_window = evaluation_end_date < evaluation_start_date
+        if a.button("Reconstruct candidate history",use_container_width=True,disabled=invalid_evaluation_window):
             try:
-                count=CandidateReconstructor(settings,store).reconstruct(bars_by_symbol,estimated_spread_percent=Decimal(str(spread/100)))
+                decision_minutes = sorted({
+                    bar.timestamp for bars in bars_by_symbol.values() for bar in bars
+                    if evaluation_start <= bar.timestamp <= evaluation_end
+                    and settings.trade_window_start <= bar.timestamp.astimezone(local_zone).time() <= settings.trade_window_end
+                })
+                count=CandidateReconstructor(settings,store).reconstruct(
+                    bars_by_symbol,
+                    decision_minutes=decision_minutes,
+                    estimated_spread_percent=Decimal(str(spread/100)),
+                )
                 st.success(f"Recorded {count:,} reconstructed point-in-time scanner rows."); st.rerun()
             except Exception as exc: st.error(f"Reconstruction failed: {exc}")
-        if b.button("Run portfolio replay",use_container_width=True):
+        if b.button("Run portfolio replay",use_container_width=True,disabled=invalid_evaluation_window):
             try:
-                result=PortfolioReplayEngine(settings,store).run(bars_by_symbol,source="reconstructed",feed="imported")
+                result=PortfolioReplayEngine(settings,store).run(
+                    bars_by_symbol,
+                    source="reconstructed",
+                    feed="imported",
+                    evaluation_start=evaluation_start,
+                    evaluation_end=evaluation_end,
+                )
                 st.session_state.portfolio_result=result
                 st.success(f"Portfolio replay complete: {len(result.accepted_trades)} accepted trades, {len(result.rejected_trades)} portfolio-gate rejections."); st.rerun()
             except Exception as exc: st.error(f"Portfolio replay failed: {exc}")
+        diagnostic_rows = store.candidates(
+            source="reconstructed",
+            passed_only=False,
+            symbols=bars_by_symbol,
+            start_time=evaluation_start,
+            end_time=evaluation_end,
+        )
+        if diagnostic_rows:
+            passed_symbols = sorted({row["symbol"] for row in diagnostic_rows if row["passed"]})
+            st.caption("Scanner-passing symbols in this evaluation: " + (", ".join(passed_symbols) if passed_symbols else "none"))
+            failures = [row for row in diagnostic_rows if not row["passed"]]
+            if failures:
+                failure_counts: dict[tuple[str, str], int] = {}
+                for row in failures:
+                    key = (row["symbol"], row["reason"])
+                    failure_counts[key] = failure_counts.get(key, 0) + 1
+                failure_table = [
+                    {"symbol": symbol, "reason": reason, "rows": count}
+                    for (symbol, reason), count in sorted(failure_counts.items())
+                ]
+                with st.expander("Why reconstructed candidates failed the scanner"):
+                    st.dataframe(pd.DataFrame(failure_table), use_container_width=True, hide_index=True)
     result=st.session_state.portfolio_result
     if result:
         st.subheader("Latest portfolio replay")
-        a,b,c,d=st.columns(4); a.metric("Symbols",len(result.symbols)); b.metric("Candidates",result.candidate_count); c.metric("Accepted trades",len(result.accepted_trades)); d.metric("Net P/L",_fmt_money(result.metrics.get("net_profit")))
-        tabs=st.tabs(["Accepted trades","Portfolio rejections","Notes"])
+        a,b,c,d=st.columns(4); a.metric("Passing symbols",len(result.symbols)); b.metric("Scoped candidates",result.candidate_count); c.metric("Accepted trades",len(result.accepted_trades)); d.metric("Net P/L",_fmt_money(result.metrics.get("net_profit")))
+        tabs=st.tabs(["Accepted trades","Strategy diagnostics","Portfolio rejections","Notes"])
         with tabs[0]:
             if result.accepted_trades: st.dataframe(pd.DataFrame(trade_table_rows(result.accepted_trades)),use_container_width=True,hide_index=True)
             else: st.info("No trades passed the strategy and portfolio gates.")
         with tabs[1]:
+            if result.strategy_diagnostics:
+                diagnostic_table = []
+                for row in sorted(result.strategy_diagnostics, key=lambda value: (value["symbol"], -value["count"], value["reason"])):
+                    diagnostic_table.append(
+                        {
+                            "symbol": row["symbol"],
+                            "stage": row["stage"],
+                            "reason": row["reason"],
+                            "count": row["count"],
+                            "representative timestamp": row["representative_timestamp"],
+                            "actual": json.dumps(to_json_safe(row["actual_values"]), sort_keys=True),
+                            "expected": json.dumps(to_json_safe(row["expected_values"]), sort_keys=True),
+                        }
+                    )
+                st.dataframe(pd.DataFrame(diagnostic_table),use_container_width=True,hide_index=True)
+                st.caption("Representative timestamp is the latest occurrence of each rejection type within the scoped replay.")
+            else: st.info("No strategy-level setup rejections were recorded.")
+        with tabs[2]:
             if result.rejected_trades: st.dataframe(pd.DataFrame(result.rejected_trades),use_container_width=True,hide_index=True)
             else: st.caption("No portfolio-gate rejections.")
-        with tabs[2]:
+        with tabs[3]:
             for note in result.notes: st.caption("• "+note)
 
 

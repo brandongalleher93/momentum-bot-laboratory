@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import IO, Optional, Sequence
+from typing import Any, IO, Optional, Sequence
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -48,6 +48,7 @@ class BacktestResult:
     setup_rejections: int
     entry_opportunities: int
     ambiguous_same_bar_count: int
+    rejection_details: list[dict[str, Any]]
     notes: list[str]
 
 
@@ -61,7 +62,12 @@ class BacktestEngine:
         self.risk = RiskManager(settings, self.diagnostics)
         self.exits = ExitManager(settings, self.diagnostics)
 
-    def run(self, bars: Sequence[Bar]) -> BacktestResult:
+    def run(
+        self,
+        bars: Sequence[Bar],
+        *,
+        allowed_decision_times: set[datetime] | None = None,
+    ) -> BacktestResult:
         self._validate_bars(bars)
         symbol = bars[0].symbol
         eastern = ZoneInfo(self.settings.timezone)
@@ -73,13 +79,16 @@ class BacktestEngine:
         rejected = 0
         opportunities = 0
         ambiguous_count = 0
+        rejection_details: list[dict[str, Any]] = []
         for session_bars in by_date.values():
-            session_trades, session_rejected, session_opportunities = self._run_session(
-                session_bars
+            session_trades, session_rejected, session_opportunities, session_details = self._run_session(
+                session_bars,
+                allowed_decision_times=allowed_decision_times,
             )
             trades.extend(session_trades)
             rejected += session_rejected
             opportunities += session_opportunities
+            rejection_details.extend(session_details)
             ambiguous_count += sum(1 for trade in session_trades if trade.ambiguous_same_bar)
 
         return BacktestResult(
@@ -88,6 +97,7 @@ class BacktestEngine:
             setup_rejections=rejected,
             entry_opportunities=opportunities,
             ambiguous_same_bar_count=ambiguous_count,
+            rejection_details=rejection_details,
             notes=[
                 "Input is treated as a pre-screened single-symbol candidate stream.",
                 "One-minute bars use conservative stop-first resolution when sequence is unknown.",
@@ -96,8 +106,11 @@ class BacktestEngine:
         )
 
     def _run_session(
-        self, bars: Sequence[Bar]
-    ) -> tuple[list[BacktestTrade], int, int]:
+        self,
+        bars: Sequence[Bar],
+        *,
+        allowed_decision_times: set[datetime] | None = None,
+    ) -> tuple[list[BacktestTrade], int, int, list[dict[str, Any]]]:
         trades: list[BacktestTrade] = []
         position: Optional[PositionRecord] = None
         entry_setup_id: Optional[str] = None
@@ -105,6 +118,7 @@ class BacktestEngine:
         realized_loss = Decimal("0")
         rejected = 0
         opportunities = 0
+        rejection_details: list[dict[str, Any]] = []
 
         for index, event_bar in enumerate(bars):
             available = bars[:index]
@@ -133,14 +147,36 @@ class BacktestEngine:
             ):
                 continue
             decision_time = available[-1].timestamp
+            if allowed_decision_times is not None and decision_time not in allowed_decision_times:
+                continue
             setup_result = self.strategy.detect_setup(
                 event_bar.symbol, available, decision_time
             )
             if setup_result.value is None:
                 rejected += 1
+                rejection_details.append(
+                    {
+                        "symbol": event_bar.symbol,
+                        "timestamp": decision_time,
+                        "stage": setup_result.diagnostic.module,
+                        "reason": setup_result.diagnostic.reason,
+                        "actual_values": setup_result.diagnostic.actual_values,
+                        "expected_values": setup_result.diagnostic.expected_values,
+                    }
+                )
                 continue
             setup = setup_result.value
             if event_bar.high < setup.trigger_price:
+                rejection_details.append(
+                    {
+                        "symbol": event_bar.symbol,
+                        "timestamp": decision_time,
+                        "stage": "entry_trigger",
+                        "reason": "Breakout trigger was not reached on the next bar.",
+                        "actual_values": {"next_bar_high": event_bar.high},
+                        "expected_values": {"minimum_high": setup.trigger_price},
+                    }
+                )
                 continue
 
             opportunities += 1
@@ -155,9 +191,29 @@ class BacktestEngine:
             )
             entry_result = self.strategy.check_entry(setup, quote)
             if entry_result.value is None or not entry_result.value.triggered:
+                rejection_details.append(
+                    {
+                        "symbol": event_bar.symbol,
+                        "timestamp": decision_time,
+                        "stage": entry_result.diagnostic.module,
+                        "reason": entry_result.diagnostic.reason,
+                        "actual_values": entry_result.diagnostic.actual_values,
+                        "expected_values": entry_result.diagnostic.expected_values,
+                    }
+                )
                 continue
             plan_result = self.strategy.create_trade_plan(setup, entry_result.value)
             if plan_result.value is None:
+                rejection_details.append(
+                    {
+                        "symbol": event_bar.symbol,
+                        "timestamp": decision_time,
+                        "stage": plan_result.diagnostic.module,
+                        "reason": plan_result.diagnostic.reason,
+                        "actual_values": plan_result.diagnostic.actual_values,
+                        "expected_values": plan_result.diagnostic.expected_values,
+                    }
+                )
                 continue
             plan = plan_result.value
             risk_result = self.risk.evaluate(
@@ -171,12 +227,32 @@ class BacktestEngine:
                 event_bar.timestamp,
             )
             if not risk_result.approval.approved:
+                rejection_details.append(
+                    {
+                        "symbol": event_bar.symbol,
+                        "timestamp": decision_time,
+                        "stage": risk_result.diagnostic.module,
+                        "reason": risk_result.diagnostic.reason,
+                        "actual_values": risk_result.diagnostic.actual_values,
+                        "expected_values": risk_result.diagnostic.expected_values,
+                    }
+                )
                 continue
 
             slipped_entry = assumed_ask * (
                 Decimal("1") + self.settings.backtest_entry_slippage_bps / Decimal("10000")
             )
             if slipped_entry > plan.maximum_entry_price:
+                rejection_details.append(
+                    {
+                        "symbol": event_bar.symbol,
+                        "timestamp": decision_time,
+                        "stage": "backtest_execution",
+                        "reason": "Slipped entry exceeded the protected maximum entry price.",
+                        "actual_values": {"slipped_entry": slipped_entry},
+                        "expected_values": {"maximum_entry_price": plan.maximum_entry_price},
+                    }
+                )
                 continue  # The marketable limit did not fill within its protection.
             actual_risk_per_share = slipped_entry - plan.stop_price
             actual_target = slipped_entry + (
@@ -228,7 +304,7 @@ class BacktestEngine:
                     entry_time=entry_time or position.opened_at,
                 )
             )
-        return trades, rejected, opportunities
+        return trades, rejected, opportunities, rejection_details
 
     def _maybe_close_position(
         self,
