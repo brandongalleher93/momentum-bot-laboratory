@@ -133,7 +133,22 @@ class PortfolioReplayTests(unittest.TestCase):
                 Decimal("4.99"),
                 Decimal("5.01"),
             )
-            for snapshot in (current, stale, outside_trade_window):
+            wrong_date = MarketSnapshot(
+                "TEST",
+                bars[-2].timestamp + timedelta(days=1),
+                Decimal("5"),
+                Decimal("0.20"),
+                Decimal("6"),
+                600000,
+                Decimal("4.99"),
+                Decimal("5.01"),
+            )
+            for snapshot in (
+                current,
+                stale,
+                outside_trade_window,
+                wrong_date,
+            ):
                 outcome = scanner.scan([snapshot])
                 store.record_scan([snapshot], outcome.diagnostics, source="reconstructed")
 
@@ -142,7 +157,14 @@ class PortfolioReplayTests(unittest.TestCase):
                 source="reconstructed",
                 feed="iex",
                 evaluation_start=evaluation_start,
-                evaluation_end=evaluation_end,
+                evaluation_end=evaluation_end + timedelta(days=2),
+                evaluation_dates_by_symbol={
+                    "TEST": {
+                        current.timestamp.astimezone(
+                            ZoneInfo(settings.timezone)
+                        ).date()
+                    }
+                },
             )
 
             self.assertEqual(result.symbols, ["TEST"])

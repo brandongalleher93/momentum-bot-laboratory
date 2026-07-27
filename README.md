@@ -235,6 +235,38 @@ Continuous paper polling:
 python -m bot run
 ```
 
+## Run real-time shadow paper
+
+Shadow mode uses the live market-data feed but records entries and exits only in
+a local SQLite ledger. It has no broker object and refuses to start whenever
+paper order submission is enabled. It applies the frozen premarket validation
+profile without changing the regular paper-bot settings.
+
+Use **Start shadow observation** on the Dashboard for continuous forward
+testing; **Stop shadow observation** ends it safely. A single diagnostic cycle
+can also be run from the Dashboard or a terminal:
+
+```bash
+python -m bot shadow --once
+```
+
+For continuous observation during the configured 7:00–11:30 a.m. Eastern
+window:
+
+```bash
+python -m bot shadow
+```
+
+Trades survive a restart in
+`output/shadow_paper/shadow_trades.sqlite3`; detailed cycle, entry, exit, and
+stale-quote events are written to `output/shadow_paper/events.jsonl`. Shadow
+fills use the observed ask for entries and bid for exits. Quotes older than 30
+seconds are ignored.
+
+The current account has IEX real-time access, not SIP real-time access. Shadow
+results therefore test forward behavior and execution plumbing; they are not
+directly comparable to SIP historical replay performance.
+
 ## Logs and traceability
 
 Detailed nested events use JSON Lines as the source of truth:
@@ -253,7 +285,8 @@ the decision, the diagnostic becomes a critical lookahead rejection.
 
 ## Important current limitations
 
-- Paper trading has not been validated with this machine's credentials yet.
+- The paper account connection has been verified, but broker order submission
+  remains intentionally disabled while shadow testing gathers forward evidence.
 - Startup intentionally halts entries instead of reconstructing pre-existing trades.
 - Float is unavailable from the current Alpaca adapter and is logged as a preference
   warning rather than a hard rejection.

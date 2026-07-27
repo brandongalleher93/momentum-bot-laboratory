@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Collection, Mapping, Sequence
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -84,10 +84,19 @@ class PortfolioReplayEngine:
         feed: str = "sip",
         evaluation_start: datetime | None = None,
         evaluation_end: datetime | None = None,
+        evaluation_dates_by_symbol: Mapping[str, Collection[date]] | None = None,
         guardrails: ReplayGuardrails | None = None,
     ) -> PortfolioReplayResult:
         guardrails = guardrails or ReplayGuardrails()
         loaded_symbols = {symbol.upper() for symbol, bars in bars_by_symbol.items() if bars}
+        scoped_dates = (
+            {
+                symbol.upper(): set(dates)
+                for symbol, dates in evaluation_dates_by_symbol.items()
+            }
+            if evaluation_dates_by_symbol is not None
+            else None
+        )
         candidate_rows = self.store.candidates(
             source=source,
             passed_only=True,
@@ -102,6 +111,13 @@ class PortfolioReplayEngine:
             if self.settings.trade_window_start
             <= datetime.fromisoformat(row["timestamp"]).astimezone(eastern).time()
             <= self.settings.trade_window_end
+            and (
+                scoped_dates is None
+                or datetime.fromisoformat(row["timestamp"])
+                .astimezone(eastern)
+                .date()
+                in scoped_dates.get(row["symbol"], set())
+            )
         ]
         candidate_symbols = {row["symbol"] for row in candidate_rows}
         pass_times: dict[str, set[datetime]] = {}
@@ -114,6 +130,11 @@ class PortfolioReplayEngine:
                 bar for bar in bars_by_symbol[symbol]
                 if (evaluation_start is None or bar.timestamp >= evaluation_start)
                 and (evaluation_end is None or bar.timestamp <= evaluation_end)
+                and (
+                    scoped_dates is None
+                    or bar.timestamp.astimezone(eastern).date()
+                    in scoped_dates.get(symbol, set())
+                )
             ]
             if bars:
                 engine = BacktestEngine(self.settings)
@@ -139,6 +160,11 @@ class PortfolioReplayEngine:
                         for bar in symbol_execution_bars
                         if (evaluation_start is None or bar.timestamp >= evaluation_start)
                         and (evaluation_end is None or bar.timestamp <= evaluation_end)
+                        and (
+                            scoped_dates is None
+                            or bar.timestamp.astimezone(eastern).date()
+                            in scoped_dates.get(symbol, set())
+                        )
                     ]
                     if execution_scope:
                         if (
@@ -155,6 +181,11 @@ class PortfolioReplayEngine:
                                 and (
                                     evaluation_end is None
                                     or trade.timestamp <= evaluation_end
+                                )
+                                and (
+                                    scoped_dates is None
+                                    or trade.timestamp.astimezone(eastern).date()
+                                    in scoped_dates.get(symbol, set())
                                 )
                             ]
                         elif (
@@ -246,6 +277,11 @@ class PortfolioReplayEngine:
             bar.timestamp for bars in bars_by_symbol.values() for bar in bars
             if (evaluation_start is None or bar.timestamp >= evaluation_start)
             and (evaluation_end is None or bar.timestamp <= evaluation_end)
+            and (
+                scoped_dates is None
+                or bar.timestamp.astimezone(eastern).date()
+                in scoped_dates.get(bar.symbol, set())
+            )
         ]
         execution_symbols = sorted(
             symbol
@@ -264,7 +300,12 @@ class PortfolioReplayEngine:
             "Candidate universe source: " + source,
             f"Loaded symbols: {', '.join(sorted(loaded_symbols)) or 'none'}.",
             f"Scanner-passing symbols: {', '.join(sorted(candidate_symbols)) or 'none'}.",
-            "Candidate rows are scoped to the loaded symbols and evaluation window.",
+            (
+                "Candidate rows are scoped to their preselected symbol/date pairs; "
+                "other dates are excluded."
+                if scoped_dates is not None
+                else "Candidate rows are scoped to the loaded symbols and evaluation window."
+            ),
             (
                 "One-minute bars provide setup context; cached ten-second bars "
                 "select the first breakout trigger."

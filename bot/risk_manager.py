@@ -106,6 +106,17 @@ class RiskManager:
             return self._reject(
                 plan, snapshot, decision_time, "Consecutive-loss limit reached."
             )
+        if (
+            self.settings.max_consecutive_losses_per_symbol_day is not None
+            and snapshot.symbol_consecutive_losses
+            >= self.settings.max_consecutive_losses_per_symbol_day
+        ):
+            return self._reject(
+                plan,
+                snapshot,
+                decision_time,
+                "Per-symbol daily consecutive-loss limit reached.",
+            )
         if plan.maximum_risk_per_share <= 0:
             return self._reject(
                 plan, snapshot, decision_time, "Risk per share must be positive."

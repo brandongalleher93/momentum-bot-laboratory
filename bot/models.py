@@ -190,6 +190,7 @@ class RiskSnapshot:
     pending_order_risk: Decimal = ZERO
     trades_taken_today: int = 0
     consecutive_losses: int = 0
+    symbol_consecutive_losses: int = 0
     open_positions: int = 0
     active_entry_orders: int = 0
 

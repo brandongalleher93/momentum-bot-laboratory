@@ -35,6 +35,10 @@ class MarketData(Protocol):
 
     def get_latest_quote(self, symbol: str) -> Quote: ...
 
+    def get_completed_ten_second_bars(
+        self, symbol: str, end: datetime, lookback_minutes: int = 30
+    ) -> list[Bar]: ...
+
 
 class TradingBot:
     def __init__(self, settings: Settings, broker: PaperBroker, market_data: MarketData):
@@ -185,7 +189,14 @@ class TradingBot:
                 continue
 
             risk_result = self.risk.evaluate(
-                plan_result.value, self.state.risk_snapshot(), now
+                plan_result.value,
+                self.state.risk_snapshot(
+                    symbol=plan_result.value.symbol,
+                    session_date=now.astimezone(
+                        ZoneInfo(self.settings.timezone)
+                    ).date(),
+                ),
+                now,
             )
             self.logger.log(risk_result.diagnostic)
             if not risk_result.approval.approved:
@@ -249,7 +260,14 @@ class TradingBot:
             realized_pnl = (
                 exit_order.exit_fill_price - local.average_entry_price
             ) * Decimal(quantity)
-            self.state.record_closed_pnl(realized_pnl)
+            closed_at = exit_order.exit_filled_at or now
+            self.state.record_closed_pnl(
+                realized_pnl,
+                symbol=local.symbol,
+                session_date=closed_at.astimezone(
+                    ZoneInfo(self.settings.timezone)
+                ).date(),
+            )
             self.position_events.append(
                 {
                     "event": "position_closed",

@@ -105,6 +105,13 @@ class AppReconciliationTests(unittest.TestCase):
             )
             bot._reconcile_positions([exit_order], now)
             self.assertEqual(bot.state.realized_loss, Decimal("1.00"))
+            self.assertEqual(
+                bot.state.risk_snapshot(
+                    symbol="TEST",
+                    session_date=now.date(),
+                ).symbol_consecutive_losses,
+                1,
+            )
             self.assertEqual(bot.state.positions, {})
 
 

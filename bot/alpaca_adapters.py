@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 from bot.broker import BrokerAccount, BrokerOrder, BrokerPosition
 from bot.config import Settings, validate_settings
+from bot.historical_data import TradeTick, aggregate_trades_to_bars
 from bot.models import Bar, MarketSnapshot, Quote, TradePlan
 
 
@@ -323,6 +324,40 @@ class AlpacaMarketData:
             bid=_decimal(value.bid_price),
             ask=_decimal(value.ask_price),
         )
+
+    def get_completed_ten_second_bars(
+        self,
+        symbol: str,
+        end: datetime,
+        lookback_minutes: int = 30,
+    ) -> list[Bar]:
+        """Aggregate recent real-time-feed trades into completed ten-second bars."""
+
+        from alpaca.data.requests import StockTradesRequest
+
+        response = self.stock.get_stock_trades(
+            StockTradesRequest(
+                symbol_or_symbols=symbol,
+                start=end - timedelta(minutes=lookback_minutes),
+                end=end,
+                feed=self._feed(),
+            )
+        )
+        trades = [
+            TradeTick(
+                symbol=symbol,
+                timestamp=value.timestamp,
+                price=_decimal(value.price),
+                size=int(value.size),
+            )
+            for value in response.data.get(symbol, [])
+            if int(value.size) > 0 and value.timestamp <= end
+        ]
+        return [
+            bar
+            for bar in aggregate_trades_to_bars(trades, seconds=10)
+            if bar.timestamp <= end
+        ]
 
     def _feed(self) -> Any:
         from alpaca.data.enums import DataFeed

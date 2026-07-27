@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -43,6 +44,22 @@ class RiskManagerTests(unittest.TestCase):
         )
         self.assertFalse(result.approval.approved)
         self.assertIn("Projected", result.approval.reason)
+
+    def test_rejects_symbol_after_configured_daily_loss_streak(self) -> None:
+        manager = RiskManager(
+            replace(
+                Settings(),
+                max_consecutive_losses_per_symbol_day=2,
+            )
+        )
+        result = manager.evaluate(
+            plan(),
+            RiskSnapshot(symbol_consecutive_losses=2),
+            self.now,
+        )
+
+        self.assertFalse(result.approval.approved)
+        self.assertIn("Per-symbol daily", result.approval.reason)
 
     def test_risk_ledger_reservation_is_idempotent(self) -> None:
         ledger = RiskLedger()

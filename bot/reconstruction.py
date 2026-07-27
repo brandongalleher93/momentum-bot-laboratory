@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from bisect import bisect_right
 from collections import defaultdict
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
-from typing import Mapping, Sequence
+from typing import Collection, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 from bot.config import Settings
@@ -29,6 +29,7 @@ class CandidateReconstructor:
         *,
         execution_bars_by_symbol: Mapping[str, Sequence[Bar]] | None = None,
         decision_minutes: Sequence[datetime] | None = None,
+        decision_dates_by_symbol: Mapping[str, Collection[date]] | None = None,
         estimated_spread_percent: Decimal = Decimal("0.005"),
     ) -> int:
         eastern = ZoneInfo(self.settings.timezone)
@@ -57,6 +58,12 @@ class CandidateReconstructor:
             snapshots = []
             for symbol, days in indexed.items():
                 local_date = minute.astimezone(eastern).date()
+                if (
+                    decision_dates_by_symbol is not None
+                    and local_date
+                    not in decision_dates_by_symbol.get(symbol, ())
+                ):
+                    continue
                 current_day = current_lookup[symbol].get(local_date)
                 prior_dates = sorted(date for date in days if date < local_date)
                 if current_day is None or not prior_dates:

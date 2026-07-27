@@ -51,6 +51,12 @@ from bot.portfolio_backtest import (
 )
 from bot.reconstruction import CandidateReconstructor
 from bot.review import build_backtest_report, calculate_metrics
+from bot.shadow_runner import ShadowRunner
+from bot.validation_set import (
+    load_validation_targets,
+    target_dates_by_symbol,
+    validation_download_windows,
+)
 
 
 PROFILE_DIR = PROJECT_ROOT / "output" / "gui_profiles"
@@ -58,11 +64,27 @@ RUN_DIR = PROJECT_ROOT / "output" / "gui_backtests"
 HISTORY_DIR = PROJECT_ROOT / "output" / "history"
 HISTORY_DB = HISTORY_DIR / "history.sqlite3"
 HISTORICAL_WORKSPACE_MANIFEST = HISTORY_DIR / "active_workspace.json"
+INDEPENDENT_VALIDATION_MANIFESTS = {
+    "Set 1 — June and July 2026": (
+        PROJECT_ROOT / "data" / "independent_momentum_validation.csv"
+    ),
+    "Set 2 — May 2026": (
+        PROJECT_ROOT / "data" / "independent_momentum_validation_2.csv"
+    ),
+}
 
 HISTORICAL_REPLAY_PROFILES = {
     "Strict baseline": {},
     "Premarket validation": {
         "trade_window_start": time(7, 0),
+        "preferred_pullback_depth": Decimal("0.50"),
+        "large_upper_wick_ratio": Decimal("0.50"),
+        "near_high_of_day_percent": Decimal("0.10"),
+        "max_extension_above_vwap_percent": Decimal("0.25"),
+        "max_extension_above_ema_percent": Decimal("0.10"),
+    },
+    "Regular-hours paper validation": {
+        "trade_window_start": time(9, 30),
         "preferred_pullback_depth": Decimal("0.50"),
         "large_upper_wick_ratio": Decimal("0.50"),
         "near_high_of_day_percent": Decimal("0.10"),
@@ -92,7 +114,7 @@ REPLAY_GUARDRAIL_PRESETS = {
 CONFIG_GROUPS = {
     "Identity": ["version", "parameter_profile", "decision_register_version"],
     "Session": ["timezone", "trade_window_start", "trade_window_end", "primary_timeframe_minutes", "poll_seconds"],
-    "Account & risk": ["account_equity_assumption", "max_risk_per_trade", "max_daily_loss", "max_position_value", "max_open_positions", "max_active_entry_orders", "max_trades_per_day", "max_consecutive_losses", "cooldown_after_loss_minutes", "daily_equity_drawdown_limit"],
+    "Account & risk": ["account_equity_assumption", "max_risk_per_trade", "max_daily_loss", "max_position_value", "max_open_positions", "max_active_entry_orders", "max_trades_per_day", "max_consecutive_losses", "max_consecutive_losses_per_symbol_day", "cooldown_after_loss_minutes", "daily_equity_drawdown_limit"],
     "Scanner": ["scanner_top", "min_price", "max_price", "min_percent_gain", "min_rvol", "min_day_volume", "preferred_float_max", "max_spread_percent", "near_high_of_day_percent"],
     "Flagpole": ["ema_period", "recent_volume_lookback_candles", "recent_range_lookback_candles", "strong_up_move_min_percent", "strong_up_move_max_candles", "min_flagpole_green_candles", "flagpole_volume_ratio_min"],
     "Pullback": ["pullback_candles_min", "pullback_candles_max", "allow_four_candle_pullback", "record_four_candle_counterfactual", "setup_expiration_candles", "small_consolidation_body_to_range_max", "small_consolidation_range_to_flagpole_avg_max", "require_nonincreasing_pullback_highs", "allow_equal_pullback_highs", "preferred_pullback_depth", "hard_max_pullback_depth", "pullback_volume_ratio_max", "large_upper_wick_ratio", "doji_body_to_range_max", "shooting_star_upper_wick_to_range_min"],
@@ -109,11 +131,12 @@ def historical_replay_settings(settings: Settings, profile: str) -> Settings:
         raise ValueError(f"Unknown historical replay profile: {profile}")
     if not overrides:
         return settings
+    profile_slug = profile.lower().replace(" ", "_")
     return replace(
         settings,
         **overrides,
         parameter_profile=(
-            f"{settings.parameter_profile}:historical_premarket_validation_v1"
+            f"{settings.parameter_profile}:historical_{profile_slug}_v1"
         ),
     )
 
@@ -148,6 +171,7 @@ def _init_state(st) -> None:
     st.session_state.setdefault("backtest_source", None)
     st.session_state.setdefault("account", None)
     st.session_state.setdefault("paper_cycle_output", None)
+    st.session_state.setdefault("shadow_cycle_output", None)
     st.session_state.setdefault("historical_bars", {})
     st.session_state.setdefault("historical_execution_bars", {})
     st.session_state.setdefault("historical_missing_symbols", [])
@@ -155,6 +179,12 @@ def _init_state(st) -> None:
     st.session_state.setdefault("historical_workspace_paths", {})
     st.session_state.setdefault("historical_execution_workspace_paths", {})
     st.session_state.setdefault("historical_trade_workspace_paths", {})
+    st.session_state.setdefault("historical_validation_dates_by_symbol", {})
+    st.session_state.setdefault("historical_validation_name", None)
+    st.session_state.setdefault(
+        "historical_validation_selection",
+        next(iter(INDEPENDENT_VALIDATION_MANIFESTS)),
+    )
     st.session_state.setdefault("historical_workspace_restore_attempted", False)
     st.session_state.setdefault("historical_replay_profile", "Strict baseline")
     st.session_state.setdefault(
@@ -282,6 +312,141 @@ def _dashboard(st, pd, settings: Settings) -> None:
                 st.error("Observation cycle exceeded 90 seconds and was stopped.")
         if st.session_state.paper_cycle_output:
             st.code(st.session_state.paper_cycle_output, language="text")
+        st.subheader("Real-time shadow paper")
+        st.caption(
+            "Uses live IEX data and local simulated fills. This mode never "
+            "calls Alpaca's order-submission API."
+        )
+        from bot.shadow_paper import ShadowTradeStore
+
+        shadow_store = ShadowTradeStore(
+            settings.output_dir
+            / "shadow_paper"
+            / "shadow_trades.sqlite3"
+        )
+        shadow_summary = shadow_store.summary()
+        shadow_runner = ShadowRunner(
+            settings.output_dir,
+            sys.executable,
+            PROJECT_ROOT,
+        )
+        shadow_pid = shadow_runner.active_pid()
+        shadow_cols = st.columns(3)
+        shadow_cols[0].metric(
+            "Open shadow trades", shadow_summary["open_trades"]
+        )
+        shadow_cols[1].metric(
+            "Closed shadow trades", shadow_summary["closed_trades"]
+        )
+        shadow_cols[2].metric(
+            "Shadow net P/L",
+            _fmt_money(shadow_summary["net_profit"]),
+        )
+        shadow_trades = list(reversed(shadow_store.all_trades()))[:10]
+        if shadow_trades:
+            st.caption("Most recent shadow trades")
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "symbol": trade.symbol,
+                            "status": trade.status,
+                            "entry time": trade.entry_time,
+                            "entry": float(trade.entry_price),
+                            "exit": (
+                                float(trade.exit_price)
+                                if trade.exit_price is not None
+                                else None
+                            ),
+                            "P/L": (
+                                float(trade.realized_pnl)
+                                if trade.realized_pnl is not None
+                                else None
+                            ),
+                            "reason": trade.exit_reason or "—",
+                        }
+                        for trade in shadow_trades
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.caption(
+                "No shadow trades yet. Results are saved automatically "
+                "once the shadow runner observes a qualifying setup."
+            )
+        if settings.paper_order_submission_enabled:
+            st.warning(
+                "Shadow mode is blocked while paper-order submission is armed."
+            )
+        elif shadow_pid is not None:
+            st.success(
+                "Continuous shadow observation is running. It will stop "
+                "automatically after the trading window."
+            )
+        else:
+            st.info(
+                "Continuous shadow observation is stopped. Starting it does "
+                "not enable broker orders."
+            )
+        runner_start, runner_stop = st.columns(2)
+        if runner_start.button(
+            "Start shadow observation",
+            use_container_width=True,
+            disabled=(
+                settings.paper_order_submission_enabled
+                or shadow_pid is not None
+            ),
+        ):
+            shadow_runner.start()
+            st.rerun()
+        if runner_stop.button(
+            "Stop shadow observation",
+            use_container_width=True,
+            disabled=shadow_pid is None,
+        ):
+            shadow_runner.stop()
+            st.rerun()
+        if st.button(
+            "Run one shadow-paper cycle",
+            use_container_width=True,
+            disabled=(
+                settings.paper_order_submission_enabled
+                or shadow_pid is not None
+            ),
+            help=(
+                "A diagnostic cycle only. Use Start shadow observation for "
+                "continuous forward testing."
+            ),
+        ):
+            try:
+                completed = subprocess.run(
+                    [sys.executable, "-m", "bot", "shadow", "--once"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    check=False,
+                )
+                st.session_state.shadow_cycle_output = (
+                    completed.stdout + "\n" + completed.stderr
+                ).strip()
+                if completed.returncode == 0:
+                    st.success(
+                        "Shadow cycle finished. No broker order was placed."
+                    )
+                else:
+                    st.error(
+                        "Shadow cycle returned an error; review the output."
+                    )
+            except subprocess.TimeoutExpired:
+                st.error("Shadow cycle exceeded 120 seconds and was stopped.")
+        if st.session_state.shadow_cycle_output:
+            st.code(
+                st.session_state.shadow_cycle_output,
+                language="text",
+            )
 
 
 def _bars_frame(pd, bars):
@@ -448,6 +613,24 @@ def _historical_data(st, pd, settings: Settings) -> None:
                 symbol: str(path)
                 for symbol, path in restored_trade_paths.items()
             }
+            st.session_state.historical_validation_dates_by_symbol = {
+                symbol.upper(): {
+                    date.fromisoformat(value) for value in values
+                }
+                for symbol, values in manifest.get(
+                    "validation_dates_by_symbol", {}
+                ).items()
+            }
+            st.session_state.historical_validation_name = manifest.get(
+                "validation_name"
+            )
+            if (
+                manifest.get("validation_name")
+                in INDEPENDENT_VALIDATION_MANIFESTS
+            ):
+                st.session_state.historical_validation_selection = manifest[
+                    "validation_name"
+                ]
             if manifest.get("evaluation_start"):
                 st.session_state.historical_evaluation_start = date.fromisoformat(manifest["evaluation_start"])
             if manifest.get("evaluation_end"):
@@ -467,6 +650,312 @@ def _historical_data(st, pd, settings: Settings) -> None:
     for col, (label, value) in zip(cols, [("Snapshots",summary["snapshots"]),("Captured",summary["captured"]),("Reconstructed",summary["reconstructed"]),("Bar files",summary["data_files"]),("Replay runs",summary["replay_runs"])]):
         col.metric(label, value)
     st.info("Captured rows come from an actual scanner cycle. Reconstructed rows are approximations derived from historical bars and estimated spreads.")
+    with st.expander(
+        "Independent momentum validation batches", expanded=False
+    ):
+        validation_name = st.selectbox(
+            "Validation batch",
+            list(INDEPENDENT_VALIDATION_MANIFESTS),
+            key="historical_validation_selection",
+        )
+        validation_targets = load_validation_targets(
+            INDEPENDENT_VALIDATION_MANIFESTS[validation_name]
+        )
+        validation_dates = target_dates_by_symbol(validation_targets)
+        validation_symbols = sorted(validation_dates)
+        validation_start = min(
+            target.trade_date for target in validation_targets
+        )
+        validation_end = max(
+            target.trade_date for target in validation_targets
+        )
+        st.caption(
+            f"{len(validation_targets)} symbols across "
+            f"{len({target.trade_date for target in validation_targets})} "
+            "premarket momentum days. Symbols were selected from 9:05 a.m. "
+            "premarket lists without using their later outcomes."
+        )
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "date": target.trade_date,
+                        "symbol": target.symbol,
+                        "premarket gain": (
+                            f"{target.premarket_gain_percent:.2f}%"
+                        ),
+                        "observed price": f"${target.observed_price:.2f}",
+                        "observed volume": target.observed_volume,
+                    }
+                    for target in validation_targets
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.info(
+            "This batch is date-scoped: each symbol is evaluated only on its "
+            "listed momentum day. Minute downloads include 35 calendar days "
+            "of lookback for scanner context; raw trades and ten-second bars "
+            "are downloaded only for the target day."
+        )
+        validation_cols = st.columns(2)
+        if validation_cols[0].button(
+            "1. Download minute context",
+            use_container_width=True,
+        ):
+            if not settings.alpaca_api_key or not settings.alpaca_secret_key:
+                st.warning("Add Alpaca paper API credentials to .env first.")
+            else:
+                downloader = AlpacaHistoricalDownloader(settings, cache)
+                downloaded_paths = []
+                failures = []
+                progress = st.progress(0, text="Downloading minute context…")
+                for index, target in enumerate(validation_targets, start=1):
+                    minute_start, minute_end, _, _ = (
+                        validation_download_windows(
+                            target, settings.timezone
+                        )
+                    )
+                    try:
+                        downloaded_paths.extend(
+                            downloader.download(
+                                [target.symbol],
+                                minute_start,
+                                minute_end,
+                                feed="sip",
+                                adjustment="raw",
+                            )
+                        )
+                    except Exception as exc:
+                        failures.append(f"{target.symbol}: {exc}")
+                    progress.progress(
+                        index / len(validation_targets),
+                        text=(
+                            f"Minute context {index}/"
+                            f"{len(validation_targets)}"
+                        ),
+                    )
+                selected_paths = cache.latest_paths(
+                    feed="sip", symbols=validation_symbols
+                )
+                grouped = {
+                    symbol: BarCache.read(path)
+                    for symbol, path in selected_paths.items()
+                }
+                selected_execution_paths = execution_cache.latest_paths(
+                    feed="sip", symbols=validation_symbols
+                )
+                selected_trade_paths = trade_cache.latest_paths(
+                    feed="sip", symbols=validation_symbols
+                )
+                st.session_state.historical_bars = grouped
+                st.session_state.historical_execution_bars = {
+                    symbol: BarCache.read(path)
+                    for symbol, path in selected_execution_paths.items()
+                }
+                st.session_state.historical_feed = "sip"
+                st.session_state.historical_workspace_paths = {
+                    symbol: str(path)
+                    for symbol, path in selected_paths.items()
+                }
+                st.session_state.historical_execution_workspace_paths = {
+                    symbol: str(path)
+                    for symbol, path in selected_execution_paths.items()
+                }
+                st.session_state.historical_trade_workspace_paths = {
+                    symbol: str(path)
+                    for symbol, path in selected_trade_paths.items()
+                }
+                st.session_state.historical_missing_symbols = sorted(
+                    set(validation_symbols) - set(grouped)
+                )
+                st.session_state.historical_validation_dates_by_symbol = (
+                    validation_dates
+                )
+                st.session_state.historical_validation_name = validation_name
+                st.session_state.historical_evaluation_start = validation_start
+                st.session_state.historical_evaluation_end = validation_end
+                st.session_state.historical_replay_profile = (
+                    "Premarket validation"
+                )
+                st.session_state.historical_guardrail_preset = (
+                    "Baseline — no experimental guardrails"
+                )
+                save_workspace_manifest(
+                    HISTORICAL_WORKSPACE_MANIFEST,
+                    {
+                        "feed": "sip",
+                        "paths": [
+                            str(path) for path in selected_paths.values()
+                        ],
+                        "execution_paths": [
+                            str(path)
+                            for path in selected_execution_paths.values()
+                        ],
+                        "trade_paths": [
+                            str(path)
+                            for path in selected_trade_paths.values()
+                        ],
+                        "symbols": sorted(grouped),
+                        "missing_symbols": (
+                            st.session_state.historical_missing_symbols
+                        ),
+                        "evaluation_start": validation_start.isoformat(),
+                        "evaluation_end": validation_end.isoformat(),
+                        "validation_name": validation_name,
+                        "replay_profile": "Premarket validation",
+                        "guardrail_preset": (
+                            "Baseline — no experimental guardrails"
+                        ),
+                        "validation_dates_by_symbol": {
+                            symbol: sorted(
+                                value.isoformat() for value in dates
+                            )
+                            for symbol, dates in validation_dates.items()
+                        },
+                    },
+                )
+                if failures:
+                    st.warning(
+                        "Minute context finished with some failures: "
+                        + " | ".join(failures)
+                    )
+                else:
+                    st.success(
+                        f"Minute context is ready for "
+                        f"{len(downloaded_paths)} symbols."
+                    )
+                st.rerun()
+        if validation_cols[1].button(
+            "2. Download target-day 10-second data",
+            use_container_width=True,
+        ):
+            if not settings.alpaca_api_key or not settings.alpaca_secret_key:
+                st.warning("Add Alpaca paper API credentials to .env first.")
+            else:
+                downloader = AlpacaHistoricalDownloader(
+                    settings,
+                    cache,
+                    trade_cache=trade_cache,
+                    execution_cache=execution_cache,
+                )
+                failures = []
+                progress = st.progress(
+                    0, text="Downloading target-day raw trades…"
+                )
+                for index, target in enumerate(validation_targets, start=1):
+                    _, _, execution_start, execution_end = (
+                        validation_download_windows(
+                            target, settings.timezone
+                        )
+                    )
+                    try:
+                        downloader.download_ten_second_bars(
+                            [target.symbol],
+                            execution_start,
+                            execution_end,
+                            feed="sip",
+                        )
+                    except Exception as exc:
+                        failures.append(f"{target.symbol}: {exc}")
+                    progress.progress(
+                        index / len(validation_targets),
+                        text=(
+                            f"Target-day execution data {index}/"
+                            f"{len(validation_targets)}"
+                        ),
+                    )
+                selected_paths = cache.latest_paths(
+                    feed="sip", symbols=validation_symbols
+                )
+                selected_execution_paths = execution_cache.latest_paths(
+                    feed="sip", symbols=validation_symbols
+                )
+                selected_trade_paths = trade_cache.latest_paths(
+                    feed="sip", symbols=validation_symbols
+                )
+                grouped = {
+                    symbol: BarCache.read(path)
+                    for symbol, path in selected_paths.items()
+                }
+                st.session_state.historical_bars = grouped
+                st.session_state.historical_execution_bars = {
+                    symbol: BarCache.read(path)
+                    for symbol, path in selected_execution_paths.items()
+                }
+                st.session_state.historical_feed = "sip"
+                st.session_state.historical_workspace_paths = {
+                    symbol: str(path)
+                    for symbol, path in selected_paths.items()
+                }
+                st.session_state.historical_execution_workspace_paths = {
+                    symbol: str(path)
+                    for symbol, path in selected_execution_paths.items()
+                }
+                st.session_state.historical_trade_workspace_paths = {
+                    symbol: str(path)
+                    for symbol, path in selected_trade_paths.items()
+                }
+                st.session_state.historical_missing_symbols = sorted(
+                    set(validation_symbols) - set(grouped)
+                )
+                st.session_state.historical_validation_dates_by_symbol = (
+                    validation_dates
+                )
+                st.session_state.historical_validation_name = validation_name
+                st.session_state.historical_evaluation_start = validation_start
+                st.session_state.historical_evaluation_end = validation_end
+                st.session_state.historical_replay_profile = (
+                    "Premarket validation"
+                )
+                st.session_state.historical_guardrail_preset = (
+                    "Baseline — no experimental guardrails"
+                )
+                save_workspace_manifest(
+                    HISTORICAL_WORKSPACE_MANIFEST,
+                    {
+                        "feed": "sip",
+                        "paths": [
+                            str(path) for path in selected_paths.values()
+                        ],
+                        "execution_paths": [
+                            str(path)
+                            for path in selected_execution_paths.values()
+                        ],
+                        "trade_paths": [
+                            str(path)
+                            for path in selected_trade_paths.values()
+                        ],
+                        "symbols": sorted(grouped),
+                        "missing_symbols": (
+                            st.session_state.historical_missing_symbols
+                        ),
+                        "evaluation_start": validation_start.isoformat(),
+                        "evaluation_end": validation_end.isoformat(),
+                        "validation_name": validation_name,
+                        "replay_profile": "Premarket validation",
+                        "guardrail_preset": (
+                            "Baseline — no experimental guardrails"
+                        ),
+                        "validation_dates_by_symbol": {
+                            symbol: sorted(
+                                value.isoformat() for value in dates
+                            )
+                            for symbol, dates in validation_dates.items()
+                        },
+                    },
+                )
+                if failures:
+                    st.warning(
+                        "Execution data finished with some failures: "
+                        + " | ".join(failures)
+                    )
+                else:
+                    st.success(
+                        "Target-day raw trades and ten-second bars are ready."
+                    )
+                st.rerun()
     with st.expander("Download Alpaca historical bars", expanded=False):
         st.caption("Use SIP for strategy evaluation. Downloads are read-only market-data requests and never place orders.")
         symbols_text = st.text_area(
@@ -495,6 +984,8 @@ def _historical_data(st, pd, settings: Settings) -> None:
                     merged_bars = dict(st.session_state.historical_bars)
                     merged_bars.update(grouped)
                     st.session_state.historical_bars = merged_bars
+                    st.session_state.historical_validation_dates_by_symbol = {}
+                    st.session_state.historical_validation_name = None
                     st.session_state.historical_feed = feed
                     merged_paths = dict(st.session_state.historical_workspace_paths)
                     merged_paths.update(
@@ -512,6 +1003,8 @@ def _historical_data(st, pd, settings: Settings) -> None:
                             "paths": list(merged_paths.values()),
                             "symbols": sorted(merged_bars),
                             "missing_symbols": missing,
+                            "validation_name": None,
+                            "validation_dates_by_symbol": {},
                             "execution_paths": list(
                                 st.session_state.historical_execution_workspace_paths.values()
                             ),
@@ -560,6 +1053,8 @@ def _historical_data(st, pd, settings: Settings) -> None:
                     )
                     merged_execution.update(grouped_execution)
                     st.session_state.historical_execution_bars = merged_execution
+                    st.session_state.historical_validation_dates_by_symbol = {}
+                    st.session_state.historical_validation_name = None
                     merged_execution_paths = dict(
                         st.session_state.historical_execution_workspace_paths
                     )
@@ -596,6 +1091,8 @@ def _historical_data(st, pd, settings: Settings) -> None:
                             "trade_paths": list(merged_trade_paths.values()),
                             "symbols": sorted(st.session_state.historical_bars),
                             "missing_symbols": st.session_state.historical_missing_symbols,
+                            "validation_name": None,
+                            "validation_dates_by_symbol": {},
                         },
                     )
                     st.success(
@@ -639,6 +1136,8 @@ def _historical_data(st, pd, settings: Settings) -> None:
                     }
                     st.session_state.historical_bars = grouped
                     st.session_state.historical_execution_bars = grouped_execution
+                    st.session_state.historical_validation_dates_by_symbol = {}
+                    st.session_state.historical_validation_name = None
                     st.session_state.historical_missing_symbols = sorted(set(selected_symbols) - set(grouped))
                     st.session_state.historical_feed = cached_feed
                     st.session_state.historical_workspace_paths = {
@@ -684,6 +1183,8 @@ def _historical_data(st, pd, settings: Settings) -> None:
                 imported_paths[symbol] = cache.write(grouped[symbol], feed="imported", adjustment="raw")
             st.session_state.historical_bars = grouped
             st.session_state.historical_execution_bars = {}
+            st.session_state.historical_validation_dates_by_symbol = {}
+            st.session_state.historical_validation_name = None
             st.session_state.historical_feed = "imported"
             st.session_state.historical_workspace_paths = {
                 symbol: str(path) for symbol, path in imported_paths.items()
@@ -705,6 +1206,18 @@ def _historical_data(st, pd, settings: Settings) -> None:
     bars_by_symbol = st.session_state.historical_bars
     if bars_by_symbol:
         st.subheader("Loaded workspace")
+        active_validation_dates = {
+            symbol: set(dates)
+            for symbol, dates in (
+                st.session_state.historical_validation_dates_by_symbol.items()
+            )
+            if symbol in bars_by_symbol
+        }
+        if active_validation_dates:
+            st.success(
+                "Date-scoped validation is active. Each symbol will be scored "
+                "only on its preselected momentum day."
+            )
         if st.session_state.historical_missing_symbols:
             st.warning("No bars were returned for: " + ", ".join(st.session_state.historical_missing_symbols))
         execution_bars_by_symbol = st.session_state.historical_execution_bars
@@ -794,6 +1307,12 @@ def _historical_data(st, pd, settings: Settings) -> None:
                 "The one-minute flagpole requirements remain strict; loaded ten-second "
                 "data also enables experimental micro-pullback and reversal/reclaim setups."
             )
+        elif replay_profile == "Regular-hours paper validation":
+            st.info(
+                "This profile keeps the relaxed validation setup rules but "
+                "scores entries only from 9:30–11:30 a.m. Eastern, matching "
+                "the hours supported by the bot's protected Alpaca bracket orders."
+            )
         guardrail_preset = st.selectbox(
             "Replay-only experimental guardrails",
             list(REPLAY_GUARDRAIL_PRESETS),
@@ -833,6 +1352,15 @@ def _historical_data(st, pd, settings: Settings) -> None:
             "spread_percent": spread,
             "replay_profile": replay_profile,
             "guardrail_preset": guardrail_preset,
+            "validation_name": (
+                st.session_state.historical_validation_name
+                if active_validation_dates
+                else None
+            ),
+            "validation_dates_by_symbol": {
+                symbol: sorted(value.isoformat() for value in dates)
+                for symbol, dates in active_validation_dates.items()
+            },
         }
         decision_source = execution_bars_by_symbol or bars_by_symbol
         decision_minutes = sorted({
@@ -850,6 +1378,9 @@ def _historical_data(st, pd, settings: Settings) -> None:
                     bars_by_symbol,
                     execution_bars_by_symbol=execution_bars_by_symbol or None,
                     decision_minutes=decision_minutes,
+                    decision_dates_by_symbol=(
+                        active_validation_dates or None
+                    ),
                     estimated_spread_percent=Decimal(str(spread/100)),
                 )
                 save_workspace_manifest(HISTORICAL_WORKSPACE_MANIFEST, workspace_manifest)
@@ -879,6 +1410,9 @@ def _historical_data(st, pd, settings: Settings) -> None:
                     feed=workspace_feed,
                     evaluation_start=evaluation_start,
                     evaluation_end=evaluation_end,
+                    evaluation_dates_by_symbol=(
+                        active_validation_dates or None
+                    ),
                     guardrails=replay_guardrails,
                 )
                 st.session_state.portfolio_result=result
@@ -900,6 +1434,9 @@ def _historical_data(st, pd, settings: Settings) -> None:
                     bars_by_symbol,
                     execution_bars_by_symbol=execution_bars_by_symbol or None,
                     decision_minutes=decision_minutes,
+                    decision_dates_by_symbol=(
+                        active_validation_dates or None
+                    ),
                     estimated_spread_percent=Decimal(str(spread / 100)),
                 )
                 result=PortfolioReplayEngine(replay_settings,store).run(
@@ -916,6 +1453,9 @@ def _historical_data(st, pd, settings: Settings) -> None:
                     feed=workspace_feed,
                     evaluation_start=evaluation_start,
                     evaluation_end=evaluation_end,
+                    evaluation_dates_by_symbol=(
+                        active_validation_dates or None
+                    ),
                     guardrails=replay_guardrails,
                 )
                 st.session_state.portfolio_result=result
@@ -936,6 +1476,15 @@ def _historical_data(st, pd, settings: Settings) -> None:
             start_time=evaluation_start,
             end_time=evaluation_end,
         )
+        if active_validation_dates:
+            diagnostic_rows = [
+                row
+                for row in diagnostic_rows
+                if datetime.fromisoformat(row["timestamp"])
+                .astimezone(local_zone)
+                .date()
+                in active_validation_dates.get(row["symbol"], set())
+            ]
         if diagnostic_rows:
             passed_symbols = sorted({row["symbol"] for row in diagnostic_rows if row["passed"]})
             st.caption("Scanner-passing symbols in this evaluation: " + (", ".join(passed_symbols) if passed_symbols else "none"))

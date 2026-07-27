@@ -96,6 +96,18 @@ def _optional_decimal(
         raise ValueError(f"{name} must be a decimal number or null.") from exc
 
 
+def _time(env: Mapping[str, str], name: str, default: time) -> time:
+    raw = env.get(name)
+    if raw is None:
+        return default
+    try:
+        return time.fromisoformat(raw.strip())
+    except ValueError as exc:
+        raise ValueError(
+            f"{name} must be a time such as 07:00 or 09:30:00."
+        ) from exc
+
+
 @dataclass(frozen=True)
 class Settings:
     # Identity / traceability
@@ -127,6 +139,7 @@ class Settings:
     max_active_entry_orders: int = 1
     max_trades_per_day: Optional[int] = None
     max_consecutive_losses: Optional[int] = None
+    max_consecutive_losses_per_symbol_day: Optional[int] = None
     cooldown_after_loss_minutes: Optional[int] = None
     daily_equity_drawdown_limit: Optional[Decimal] = None
 
@@ -230,6 +243,12 @@ def load_settings(environ: Optional[Mapping[str, str]] = None) -> Settings:
             env, "PAPER_ORDER_SUBMISSION_ENABLED", False
         ),
         alpaca_data_feed=_text(env, "ALPACA_DATA_FEED", "iex"),
+        trade_window_start=_time(
+            env, "TRADE_WINDOW_START", Settings.trade_window_start
+        ),
+        trade_window_end=_time(
+            env, "TRADE_WINDOW_END", Settings.trade_window_end
+        ),
         account_equity_assumption=_decimal(env, "ACCOUNT_EQUITY_ASSUMPTION", "500"),
         max_risk_per_trade=_decimal(env, "MAX_RISK_PER_TRADE", "5"),
         max_daily_loss=_decimal(env, "MAX_DAILY_LOSS", "15"),
@@ -239,6 +258,9 @@ def load_settings(environ: Optional[Mapping[str, str]] = None) -> Settings:
         max_trades_per_day=_optional_int(env, "MAX_TRADES_PER_DAY", None),
         max_consecutive_losses=_optional_int(
             env, "MAX_CONSECUTIVE_LOSSES", None
+        ),
+        max_consecutive_losses_per_symbol_day=_optional_int(
+            env, "MAX_CONSECUTIVE_LOSSES_PER_SYMBOL_DAY", None
         ),
         cooldown_after_loss_minutes=_optional_int(
             env, "COOLDOWN_AFTER_LOSS_MINUTES", None
@@ -264,6 +286,9 @@ def load_settings(environ: Optional[Mapping[str, str]] = None) -> Settings:
         preferred_pullback_depth=_decimal(
             env, "PREFERRED_PULLBACK_DEPTH", "0.25"
         ),
+        large_upper_wick_ratio=_decimal(
+            env, "LARGE_UPPER_WICK_RATIO", "0.40"
+        ),
         pullback_volume_ratio_max=_decimal(
             env, "PULLBACK_VOLUME_RATIO_MAX", "0.70"
         ),
@@ -272,6 +297,12 @@ def load_settings(environ: Optional[Mapping[str, str]] = None) -> Settings:
         entry_order_timeout_seconds=_int(env, "ENTRY_ORDER_TIMEOUT_SECONDS", 5),
         max_allowed_stop_distance=_decimal(
             env, "MAX_ALLOWED_STOP_DISTANCE", "0.20"
+        ),
+        max_extension_above_ema_percent=_decimal(
+            env, "MAX_EXTENSION_ABOVE_EMA_PERCENT", "0.05"
+        ),
+        max_extension_above_vwap_percent=_decimal(
+            env, "MAX_EXTENSION_ABOVE_VWAP_PERCENT", "0.05"
         ),
         target_r_multiple=_decimal(env, "TARGET_R_MULTIPLE", "2.0"),
         backtest_entry_slippage_bps=_decimal(
@@ -315,8 +346,18 @@ def validate_settings(
         errors.append("MAX_RISK_PER_TRADE cannot exceed MAX_DAILY_LOSS.")
     if candidate.max_position_value > candidate.account_equity_assumption:
         errors.append("MAX_POSITION_VALUE cannot exceed the account assumption.")
+    for name, limit in {
+        "MAX_CONSECUTIVE_LOSSES": candidate.max_consecutive_losses,
+        "MAX_CONSECUTIVE_LOSSES_PER_SYMBOL_DAY": (
+            candidate.max_consecutive_losses_per_symbol_day
+        ),
+    }.items():
+        if limit is not None and limit <= 0:
+            errors.append(f"{name} must be greater than zero when enabled.")
     if candidate.min_price >= candidate.max_price:
         errors.append("MIN_PRICE must be below MAX_PRICE.")
+    if candidate.trade_window_start >= candidate.trade_window_end:
+        errors.append("TRADE_WINDOW_START must be before TRADE_WINDOW_END.")
     for name, percentage in {
         "MIN_PERCENT_GAIN": candidate.min_percent_gain,
         "MAX_SPREAD_PERCENT": candidate.max_spread_percent,

@@ -28,6 +28,16 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--once", action="store_true", help="Run one polling cycle and exit."
     )
+    shadow = subcommands.add_parser(
+        "shadow",
+        help=(
+            "Forward-test with live market data and local simulated fills; "
+            "never submit broker orders."
+        ),
+    )
+    shadow.add_argument(
+        "--once", action="store_true", help="Run one shadow cycle and exit."
+    )
 
     backtest = subcommands.add_parser(
         "backtest", help="Backtest one pre-screened symbol from OHLCV CSV data."
@@ -73,6 +83,28 @@ def main(argv: list[str] | None = None) -> int:
             bot.run_once()
         else:
             bot.run_forever()
+        return 0
+
+    if args.command == "shadow":
+        validate_settings(settings, require_alpaca_keys=True)
+        from bot.shadow_paper import (
+            ShadowPaperEngine,
+            shadow_paper_settings,
+        )
+
+        settings = shadow_paper_settings(settings)
+        data = AlpacaMarketData(settings)
+        engine = ShadowPaperEngine(settings, data)
+        if args.once:
+            print(
+                json.dumps(
+                    to_json_safe(engine.run_once()),
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            engine.run_forever()
         return 0
 
     if args.command == "backtest":

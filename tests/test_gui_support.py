@@ -44,6 +44,21 @@ class GuiSupportTests(unittest.TestCase):
         self.assertEqual(replay.preferred_pullback_depth, Decimal("0.50"))
         self.assertIn("historical_premarket_validation", replay.parameter_profile)
 
+    def test_regular_hours_profile_retains_relaxed_validation_rules(self) -> None:
+        replay = historical_replay_settings(
+            Settings(), "Regular-hours paper validation"
+        )
+
+        self.assertEqual(replay.trade_window_start, time(9, 30))
+        self.assertEqual(replay.preferred_pullback_depth, Decimal("0.50"))
+        self.assertEqual(
+            replay.max_extension_above_vwap_percent, Decimal("0.25")
+        )
+        self.assertIn(
+            "historical_regular-hours_paper_validation",
+            replay.parameter_profile,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

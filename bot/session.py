@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from decimal import Decimal
 from threading import RLock
 from typing import Optional
@@ -23,13 +24,21 @@ class SessionState:
     unrealized_loss: Decimal = Decimal("0")
     trades_taken_today: int = 0
     consecutive_losses: int = 0
+    symbol_loss_streaks: dict[tuple[date, str], int] = field(
+        default_factory=dict
+    )
     orders: dict[str, OrderRecord] = field(default_factory=dict)
     positions: dict[str, PositionRecord] = field(default_factory=dict)
     new_entries_enabled: bool = True
     halt_reason: Optional[str] = None
     _lock: RLock = field(default_factory=RLock, repr=False)
 
-    def risk_snapshot(self) -> RiskSnapshot:
+    def risk_snapshot(
+        self,
+        *,
+        symbol: str | None = None,
+        session_date: date | None = None,
+    ) -> RiskSnapshot:
         with self._lock:
             open_stop_risk = sum(
                 (
@@ -50,6 +59,13 @@ class SessionState:
                 pending_order_risk=pending_risk,
                 trades_taken_today=self.trades_taken_today,
                 consecutive_losses=self.consecutive_losses,
+                symbol_consecutive_losses=(
+                    self.symbol_loss_streaks.get(
+                        (session_date, symbol.upper()), 0
+                    )
+                    if symbol is not None and session_date is not None
+                    else 0
+                ),
                 open_positions=len(self.positions),
                 active_entry_orders=len(active_orders),
             )
@@ -76,10 +92,24 @@ class SessionState:
             self.new_entries_enabled = False
             self.halt_reason = reason
 
-    def record_closed_pnl(self, realized_pnl: Decimal) -> None:
+    def record_closed_pnl(
+        self,
+        realized_pnl: Decimal,
+        *,
+        symbol: str | None = None,
+        session_date: date | None = None,
+    ) -> None:
         with self._lock:
             if realized_pnl < 0:
                 self.realized_loss += abs(realized_pnl)
                 self.consecutive_losses += 1
             else:
                 self.consecutive_losses = 0
+            if symbol is not None and session_date is not None:
+                key = (session_date, symbol.upper())
+                if realized_pnl < 0:
+                    self.symbol_loss_streaks[key] = (
+                        self.symbol_loss_streaks.get(key, 0) + 1
+                    )
+                else:
+                    self.symbol_loss_streaks[key] = 0
