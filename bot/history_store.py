@@ -120,26 +120,43 @@ class HistoryStore:
         *,
         source: str,
     ) -> int:
+        return self.record_scan_batch(
+            [(snapshots, diagnostics)], source=source
+        )
+
+    def record_scan_batch(
+        self,
+        scans: Sequence[
+            tuple[Sequence[MarketSnapshot], Sequence[DiagnosticResult]]
+        ],
+        *,
+        source: str,
+    ) -> int:
         if source not in {"captured", "reconstructed", "imported"}:
             raise ValueError("Unknown history source.")
-        by_symbol = {value.symbol: value for value in diagnostics if value.symbol}
         rows = []
-        for rank, snapshot in enumerate(snapshots, start=1):
-            diagnostic = by_symbol.get(snapshot.symbol)
-            rows.append(
-                (
-                    snapshot.timestamp.isoformat(), snapshot.symbol, source, rank,
-                    str(snapshot.price), str(snapshot.percent_gain), str(snapshot.rvol),
-                    snapshot.day_volume, str(snapshot.bid), str(snapshot.ask),
-                    str(snapshot.spread_percent), snapshot.float_shares,
-                    int(bool(diagnostic.passed if diagnostic else False)),
-                    diagnostic.reason if diagnostic else "No diagnostic was recorded.",
-                    diagnostic.config_version if diagnostic else "unknown",
-                    diagnostic.parameter_profile if diagnostic else "unknown",
-                    json.dumps(to_json_safe(diagnostic.actual_values if diagnostic else {}), sort_keys=True),
-                    json.dumps(to_json_safe(diagnostic.expected_values if diagnostic else {}), sort_keys=True),
+        for snapshots, diagnostics in scans:
+            by_symbol = {
+                value.symbol: value for value in diagnostics if value.symbol
+            }
+            for rank, snapshot in enumerate(snapshots, start=1):
+                diagnostic = by_symbol.get(snapshot.symbol)
+                rows.append(
+                    (
+                        snapshot.timestamp.isoformat(), snapshot.symbol, source, rank,
+                        str(snapshot.price), str(snapshot.percent_gain), str(snapshot.rvol),
+                        snapshot.day_volume, str(snapshot.bid), str(snapshot.ask),
+                        str(snapshot.spread_percent), snapshot.float_shares,
+                        int(bool(diagnostic.passed if diagnostic else False)),
+                        diagnostic.reason if diagnostic else "No diagnostic was recorded.",
+                        diagnostic.config_version if diagnostic else "unknown",
+                        diagnostic.parameter_profile if diagnostic else "unknown",
+                        json.dumps(to_json_safe(diagnostic.actual_values if diagnostic else {}), sort_keys=True),
+                        json.dumps(to_json_safe(diagnostic.expected_values if diagnostic else {}), sort_keys=True),
+                    )
                 )
-            )
+        if not rows:
+            return 0
         with self.connect() as db:
             db.executemany(
                 """INSERT OR REPLACE INTO scanner_snapshots

@@ -1,11 +1,12 @@
 import unittest
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 
 from bot.config import Settings
 from bot.diagnostics import DiagnosticFactory
-from bot.models import Quote
-from bot.strategy import BullFlagStrategy
+from bot.models import Bar, Quote
+from bot.strategy import BullFlagStrategy, MicroPullbackStrategy
 from tests.fixtures import valid_bull_flag_bars
 
 
@@ -65,6 +66,121 @@ class StrategyTests(unittest.TestCase):
         assert plan is not None
         self.assertEqual(plan.stop_price, Decimal("5.05"))
         self.assertEqual(plan.reward_to_risk, Decimal("2.0"))
+
+    def test_reports_closest_flagpole_failure_with_measurements(self) -> None:
+        settings = replace(
+            self.settings, strong_up_move_min_percent=Decimal("0.50")
+        )
+        strategy = BullFlagStrategy(settings, DiagnosticFactory(settings))
+
+        result = strategy.detect_setup(
+            "TEST", self.bars, self.bars[-1].timestamp
+        )
+
+        self.assertIsNone(result.value)
+        self.assertEqual(
+            result.diagnostic.reason,
+            "Flagpole move is below the configured minimum.",
+        )
+        self.assertIn("flagpole_percent_move", result.diagnostic.actual_values)
+        self.assertEqual(
+            result.diagnostic.expected_values["minimum_flagpole_percent_move"],
+            Decimal("0.50"),
+        )
+        self.assertEqual(
+            result.diagnostic.actual_values["candidate_rules_passed"], 2
+        )
+
+    def test_reports_closest_pullback_depth_failure_with_measurements(self) -> None:
+        settings = replace(
+            self.settings, preferred_pullback_depth=Decimal("0.01")
+        )
+        strategy = BullFlagStrategy(settings, DiagnosticFactory(settings))
+
+        result = strategy.detect_setup(
+            "TEST", self.bars, self.bars[-1].timestamp
+        )
+
+        self.assertIsNone(result.value)
+        self.assertEqual(
+            result.diagnostic.reason,
+            "Pullback depth exceeds the configured maximum.",
+        )
+        self.assertEqual(
+            result.diagnostic.actual_values["pullback_depth"], Decimal("0.25")
+        )
+        self.assertEqual(
+            result.diagnostic.actual_values["closest_pullback_candles"], 2
+        )
+
+    def test_reports_closest_pullback_volume_failure_with_measurements(self) -> None:
+        settings = replace(
+            self.settings, pullback_volume_ratio_max=Decimal("0.01")
+        )
+        strategy = BullFlagStrategy(settings, DiagnosticFactory(settings))
+
+        result = strategy.detect_setup(
+            "TEST", self.bars, self.bars[-1].timestamp
+        )
+
+        self.assertIsNone(result.value)
+        self.assertEqual(
+            result.diagnostic.reason,
+            "Pullback volume did not contract enough.",
+        )
+        self.assertEqual(
+            result.diagnostic.actual_values["pullback_volume_ratio"],
+            Decimal("0.3"),
+        )
+        self.assertEqual(
+            result.diagnostic.actual_values["candidate_rules_passed"], 9
+        )
+
+    def test_zero_range_flagpole_is_rejected_without_division_error(self) -> None:
+        setup = self.strategy.detect_setup(
+            "TEST", self.bars, self.bars[-1].timestamp
+        ).value
+        assert setup is not None
+        zero_range_flagpole = replace(
+            setup.flagpole, average_range=Decimal("0")
+        )
+
+        pullback, failure = self.strategy._inspect_pullback(
+            setup.pullback.bars, zero_range_flagpole
+        )
+
+        self.assertIsNone(pullback)
+        assert failure is not None
+        self.assertEqual(
+            failure.reason,
+            "Flagpole average candle range is not positive.",
+        )
+
+    def test_detects_completed_ten_second_micro_pullback(self) -> None:
+        start = self.bars[-1].timestamp
+        micro_bars = [
+            Bar("TEST", start, Decimal("5.00"), Decimal("5.02"), Decimal("4.99"), Decimal("5.01"), 100),
+            Bar("TEST", start + timedelta(seconds=10), Decimal("5.01"), Decimal("5.30"), Decimal("5.00"), Decimal("5.28"), 300),
+            Bar("TEST", start + timedelta(seconds=20), Decimal("5.28"), Decimal("5.50"), Decimal("5.27"), Decimal("5.48"), 400),
+            Bar("TEST", start + timedelta(seconds=30), Decimal("5.48"), Decimal("5.49"), Decimal("5.38"), Decimal("5.40"), 150),
+            Bar("TEST", start + timedelta(seconds=40), Decimal("5.40"), Decimal("5.45"), Decimal("5.35"), Decimal("5.42"), 100),
+        ]
+        strategy = MicroPullbackStrategy(
+            self.settings, DiagnosticFactory(self.settings)
+        )
+
+        result = strategy.detect_setup(
+            "TEST", micro_bars, micro_bars[-1].timestamp
+        )
+
+        self.assertIsNotNone(result.value, result.diagnostic.reason)
+        assert result.value is not None
+        self.assertEqual(result.value.breakout_level, Decimal("5.50"))
+        self.assertEqual(result.value.trigger_price, Decimal("5.51"))
+        self.assertIn(
+            "micro_pullback_breakout",
+            result.diagnostic.actual_values["pattern"],
+        )
 
 
 if __name__ == "__main__":

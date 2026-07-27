@@ -38,8 +38,17 @@ from bot.gui_support import (
     trade_table_rows,
 )
 from bot.history_store import HistoryStore
-from bot.historical_data import AlpacaHistoricalDownloader, BarCache
-from bot.portfolio_backtest import PortfolioReplayEngine
+from bot.historical_data import (
+    AlpacaHistoricalDownloader,
+    BarCache,
+    TradeCache,
+    load_workspace_manifest,
+    save_workspace_manifest,
+)
+from bot.portfolio_backtest import (
+    PortfolioReplayEngine,
+    ReplayGuardrails,
+)
 from bot.reconstruction import CandidateReconstructor
 from bot.review import build_backtest_report, calculate_metrics
 
@@ -48,6 +57,37 @@ PROFILE_DIR = PROJECT_ROOT / "output" / "gui_profiles"
 RUN_DIR = PROJECT_ROOT / "output" / "gui_backtests"
 HISTORY_DIR = PROJECT_ROOT / "output" / "history"
 HISTORY_DB = HISTORY_DIR / "history.sqlite3"
+HISTORICAL_WORKSPACE_MANIFEST = HISTORY_DIR / "active_workspace.json"
+
+HISTORICAL_REPLAY_PROFILES = {
+    "Strict baseline": {},
+    "Premarket validation": {
+        "trade_window_start": time(7, 0),
+        "preferred_pullback_depth": Decimal("0.50"),
+        "large_upper_wick_ratio": Decimal("0.50"),
+        "near_high_of_day_percent": Decimal("0.10"),
+        "max_extension_above_vwap_percent": Decimal("0.25"),
+        "max_extension_above_ema_percent": Decimal("0.10"),
+    },
+}
+
+REPLAY_GUARDRAIL_PRESETS = {
+    "Baseline — no experimental guardrails": ReplayGuardrails(),
+    "2-minute re-entry cooldown only": ReplayGuardrails(
+        reentry_cooldown_minutes=2
+    ),
+    "Stop after 2 consecutive losses only": ReplayGuardrails(
+        max_consecutive_losses_per_symbol_day=2
+    ),
+    "Maximum 3 trades per symbol/day only": ReplayGuardrails(
+        max_trades_per_symbol_day=3
+    ),
+    "Combined suggested test": ReplayGuardrails(
+        reentry_cooldown_minutes=2,
+        max_consecutive_losses_per_symbol_day=2,
+        max_trades_per_symbol_day=3,
+    ),
+}
 
 CONFIG_GROUPS = {
     "Identity": ["version", "parameter_profile", "decision_register_version"],
@@ -61,6 +101,21 @@ CONFIG_GROUPS = {
     "Execution": ["partial_fill_protection_timeout_seconds", "periodic_reconciliation_seconds"],
     "Backtest": ["same_bar_stop_target_policy", "backtest_entry_slippage_bps", "backtest_exit_slippage_bps", "commission_per_trade"],
 }
+
+
+def historical_replay_settings(settings: Settings, profile: str) -> Settings:
+    overrides = HISTORICAL_REPLAY_PROFILES.get(profile)
+    if overrides is None:
+        raise ValueError(f"Unknown historical replay profile: {profile}")
+    if not overrides:
+        return settings
+    return replace(
+        settings,
+        **overrides,
+        parameter_profile=(
+            f"{settings.parameter_profile}:historical_premarket_validation_v1"
+        ),
+    )
 
 
 def _imports():
@@ -94,8 +149,20 @@ def _init_state(st) -> None:
     st.session_state.setdefault("account", None)
     st.session_state.setdefault("paper_cycle_output", None)
     st.session_state.setdefault("historical_bars", {})
+    st.session_state.setdefault("historical_execution_bars", {})
     st.session_state.setdefault("historical_missing_symbols", [])
+    st.session_state.setdefault("historical_feed", None)
+    st.session_state.setdefault("historical_workspace_paths", {})
+    st.session_state.setdefault("historical_execution_workspace_paths", {})
+    st.session_state.setdefault("historical_trade_workspace_paths", {})
+    st.session_state.setdefault("historical_workspace_restore_attempted", False)
+    st.session_state.setdefault("historical_replay_profile", "Strict baseline")
+    st.session_state.setdefault(
+        "historical_guardrail_preset", "Combined suggested test"
+    )
     st.session_state.setdefault("portfolio_result", None)
+    st.session_state.setdefault("portfolio_result_profile", None)
+    st.session_state.setdefault("portfolio_result_guardrail_preset", None)
 
 
 def _style(st) -> None:
@@ -333,18 +400,86 @@ def _historical_data(st, pd, settings: Settings) -> None:
     st.caption("Build the replay dataset while keeping captured and reconstructed history visibly separate.")
     store = HistoryStore(HISTORY_DB)
     summary = store.summary()
+    cache = BarCache(HISTORY_DIR / "bars", store)
+    execution_cache = BarCache(HISTORY_DIR / "bars_10s", store)
+    trade_cache = TradeCache(HISTORY_DIR / "trades")
+    manifest = load_workspace_manifest(HISTORICAL_WORKSPACE_MANIFEST)
+    if not st.session_state.historical_workspace_restore_attempted:
+        st.session_state.historical_workspace_restore_attempted = True
+        restored = {}
+        for value in manifest.get("paths", []):
+            path = Path(value)
+            if path.exists():
+                bars = BarCache.read(path)
+                if bars:
+                    restored[bars[0].symbol] = bars
+        if restored:
+            st.session_state.historical_bars = restored
+            restored_execution = {}
+            for value in manifest.get("execution_paths", []):
+                path = Path(value)
+                if path.exists():
+                    bars = BarCache.read(path)
+                    if bars:
+                        restored_execution[bars[0].symbol] = bars
+            st.session_state.historical_execution_bars = restored_execution
+            st.session_state.historical_missing_symbols = manifest.get("missing_symbols", [])
+            st.session_state.historical_feed = manifest.get("feed")
+            st.session_state.historical_workspace_paths = {
+                Path(value).parent.name.upper(): value
+                for value in manifest.get("paths", [])
+                if Path(value).exists()
+            }
+            st.session_state.historical_execution_workspace_paths = {
+                Path(value).parent.name.upper(): value
+                for value in manifest.get("execution_paths", [])
+                if Path(value).exists()
+            }
+            restored_trade_paths = {
+                Path(value).parent.name.upper(): Path(value)
+                for value in manifest.get("trade_paths", [])
+                if Path(value).exists()
+            }
+            if not restored_trade_paths and manifest.get("feed"):
+                restored_trade_paths = trade_cache.latest_paths(
+                    feed=manifest["feed"], symbols=restored
+                )
+            st.session_state.historical_trade_workspace_paths = {
+                symbol: str(path)
+                for symbol, path in restored_trade_paths.items()
+            }
+            if manifest.get("evaluation_start"):
+                st.session_state.historical_evaluation_start = date.fromisoformat(manifest["evaluation_start"])
+            if manifest.get("evaluation_end"):
+                st.session_state.historical_evaluation_end = date.fromisoformat(manifest["evaluation_end"])
+            if manifest.get("spread_percent") is not None:
+                st.session_state.historical_spread_percent = float(manifest["spread_percent"])
+            if manifest.get("replay_profile") in HISTORICAL_REPLAY_PROFILES:
+                st.session_state.historical_replay_profile = manifest["replay_profile"]
+            if (
+                manifest.get("guardrail_preset")
+                in REPLAY_GUARDRAIL_PRESETS
+            ):
+                st.session_state.historical_guardrail_preset = manifest[
+                    "guardrail_preset"
+                ]
     cols = st.columns(5)
     for col, (label, value) in zip(cols, [("Snapshots",summary["snapshots"]),("Captured",summary["captured"]),("Reconstructed",summary["reconstructed"]),("Bar files",summary["data_files"]),("Replay runs",summary["replay_runs"])]):
         col.metric(label, value)
     st.info("Captured rows come from an actual scanner cycle. Reconstructed rows are approximations derived from historical bars and estimated spreads.")
     with st.expander("Download Alpaca historical bars", expanded=False):
         st.caption("Use SIP for strategy evaluation. Downloads are read-only market-data requests and never place orders.")
-        symbols_text = st.text_area("Symbols", placeholder="AAPL, TSLA, NVDA")
+        symbols_text = st.text_area(
+            "Symbols",
+            value=", ".join(sorted(st.session_state.historical_bars)),
+            placeholder="AAPL, TSLA, NVDA",
+        )
         start_col, end_col, feed_col = st.columns(3)
         start_date = start_col.date_input("Start", value=date.today() - timedelta(days=130))
         end_date = end_col.date_input("End", value=date.today())
         feed = feed_col.selectbox("Feed", ["sip", "iex"], index=0)
-        if st.button("Download and cache minute bars", use_container_width=True):
+        minute_col, execution_col = st.columns(2)
+        if minute_col.button("Download and cache minute bars", use_container_width=True):
             symbols = [value.strip().upper() for value in symbols_text.replace("\n", ",").split(",") if value.strip()]
             if not symbols:
                 st.warning("Enter at least one symbol.")
@@ -352,32 +487,219 @@ def _historical_data(st, pd, settings: Settings) -> None:
                 st.warning("Add Alpaca paper API credentials to .env first. Credentials are never entered or stored in the GUI.")
             else:
                 try:
-                    cache = BarCache(HISTORY_DIR / "bars", store)
                     downloader = AlpacaHistoricalDownloader(settings, cache)
                     start_dt = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
                     end_dt = datetime.combine(end_date, time.max, tzinfo=timezone.utc)
                     paths = downloader.download(symbols, start_dt, end_dt, feed=feed, adjustment="raw")
                     grouped = {path.parent.name: BarCache.read(path) for path in paths}
-                    st.session_state.historical_bars = grouped
+                    merged_bars = dict(st.session_state.historical_bars)
+                    merged_bars.update(grouped)
+                    st.session_state.historical_bars = merged_bars
+                    st.session_state.historical_feed = feed
+                    merged_paths = dict(st.session_state.historical_workspace_paths)
+                    merged_paths.update(
+                        {path.parent.name.upper(): str(path) for path in paths}
+                    )
+                    st.session_state.historical_workspace_paths = merged_paths
                     downloaded = set(grouped)
                     missing = sorted(set(symbols) - downloaded)
                     st.session_state.historical_missing_symbols = missing
+                    save_workspace_manifest(
+                        HISTORICAL_WORKSPACE_MANIFEST,
+                        {
+                            **manifest,
+                            "feed": feed,
+                            "paths": list(merged_paths.values()),
+                            "symbols": sorted(merged_bars),
+                            "missing_symbols": missing,
+                            "execution_paths": list(
+                                st.session_state.historical_execution_workspace_paths.values()
+                            ),
+                        },
+                    )
                     st.success(f"Downloaded {len(paths)} symbol files using the {feed.upper()} feed.")
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Historical download failed: {exc}")
+        if execution_col.button(
+            "Download and cache 10-second bars",
+            use_container_width=True,
+            help=(
+                "Downloads read-only historical trades and aggregates them into "
+                "completed ten-second bars. No orders are placed."
+            ),
+        ):
+            symbols = [
+                value.strip().upper()
+                for value in symbols_text.replace("\n", ",").split(",")
+                if value.strip()
+            ]
+            if not symbols:
+                st.warning("Enter at least one symbol.")
+            elif not settings.alpaca_api_key or not settings.alpaca_secret_key:
+                st.warning("Add Alpaca paper API credentials to .env first.")
+            else:
+                try:
+                    downloader = AlpacaHistoricalDownloader(
+                        settings,
+                        cache,
+                        trade_cache=trade_cache,
+                        execution_cache=execution_cache,
+                    )
+                    start_dt = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
+                    end_dt = datetime.combine(end_date, time.max, tzinfo=timezone.utc)
+                    trade_paths, execution_paths = downloader.download_ten_second_bars(
+                        symbols, start_dt, end_dt, feed=feed
+                    )
+                    grouped_execution = {
+                        path.parent.name.upper(): BarCache.read(path)
+                        for path in execution_paths
+                    }
+                    merged_execution = dict(
+                        st.session_state.historical_execution_bars
+                    )
+                    merged_execution.update(grouped_execution)
+                    st.session_state.historical_execution_bars = merged_execution
+                    merged_execution_paths = dict(
+                        st.session_state.historical_execution_workspace_paths
+                    )
+                    merged_execution_paths.update(
+                        {
+                            path.parent.name.upper(): str(path)
+                            for path in execution_paths
+                        }
+                    )
+                    st.session_state.historical_execution_workspace_paths = (
+                        merged_execution_paths
+                    )
+                    merged_trade_paths = dict(
+                        st.session_state.historical_trade_workspace_paths
+                    )
+                    merged_trade_paths.update(
+                        {
+                            path.parent.name.upper(): str(path)
+                            for path in trade_paths
+                        }
+                    )
+                    st.session_state.historical_trade_workspace_paths = (
+                        merged_trade_paths
+                    )
+                    save_workspace_manifest(
+                        HISTORICAL_WORKSPACE_MANIFEST,
+                        {
+                            **manifest,
+                            "feed": feed,
+                            "paths": list(
+                                st.session_state.historical_workspace_paths.values()
+                            ),
+                            "execution_paths": list(merged_execution_paths.values()),
+                            "trade_paths": list(merged_trade_paths.values()),
+                            "symbols": sorted(st.session_state.historical_bars),
+                            "missing_symbols": st.session_state.historical_missing_symbols,
+                        },
+                    )
+                    st.success(
+                        f"Cached raw trades and ten-second bars for "
+                        f"{len(execution_paths)} symbols."
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Ten-second historical download failed: {exc}")
+    cached_files = cache.discover()
+    if cached_files:
+        with st.expander("Load cached historical bars", expanded=not bool(st.session_state.historical_bars)):
+            cached_feeds = sorted({value.feed for value in cached_files})
+            default_feed = manifest.get("feed")
+            if default_feed not in cached_feeds:
+                newest_cached = max(cached_files, key=lambda value: value.modified_at)
+                default_feed = newest_cached.feed
+            feed_index = cached_feeds.index(default_feed)
+            cached_feed = st.selectbox("Cached feed", cached_feeds, index=feed_index)
+            available_symbols = sorted({value.symbol for value in cached_files if value.feed == cached_feed})
+            manifest_symbols = [value for value in manifest.get("symbols", []) if value in available_symbols]
+            selected_symbols = st.multiselect(
+                "Cached symbols",
+                available_symbols,
+                default=manifest_symbols or available_symbols,
+                help="The newest cached file for each selected symbol will be loaded.",
+            )
+            if st.button("Load selected cached bars", disabled=not selected_symbols, use_container_width=True):
+                try:
+                    selected_paths = cache.latest_paths(feed=cached_feed, symbols=selected_symbols)
+                    grouped = {symbol: BarCache.read(path) for symbol, path in selected_paths.items()}
+                    selected_execution_paths = execution_cache.latest_paths(
+                        feed=cached_feed, symbols=selected_symbols
+                    )
+                    selected_trade_paths = trade_cache.latest_paths(
+                        feed=cached_feed, symbols=selected_symbols
+                    )
+                    grouped_execution = {
+                        symbol: BarCache.read(path)
+                        for symbol, path in selected_execution_paths.items()
+                    }
+                    st.session_state.historical_bars = grouped
+                    st.session_state.historical_execution_bars = grouped_execution
+                    st.session_state.historical_missing_symbols = sorted(set(selected_symbols) - set(grouped))
+                    st.session_state.historical_feed = cached_feed
+                    st.session_state.historical_workspace_paths = {
+                        symbol: str(path) for symbol, path in selected_paths.items()
+                    }
+                    st.session_state.historical_execution_workspace_paths = {
+                        symbol: str(path)
+                        for symbol, path in selected_execution_paths.items()
+                    }
+                    st.session_state.historical_trade_workspace_paths = {
+                        symbol: str(path)
+                        for symbol, path in selected_trade_paths.items()
+                    }
+                    st.session_state.portfolio_result = None
+                    save_workspace_manifest(
+                        HISTORICAL_WORKSPACE_MANIFEST,
+                        {
+                            "feed": cached_feed,
+                            "paths": [str(path) for path in selected_paths.values()],
+                            "execution_paths": [
+                                str(path) for path in selected_execution_paths.values()
+                            ],
+                            "trade_paths": [
+                                str(path) for path in selected_trade_paths.values()
+                            ],
+                            "symbols": sorted(grouped),
+                            "missing_symbols": st.session_state.historical_missing_symbols,
+                        },
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Cached-bar load failed: {exc}")
     uploads = st.file_uploader("Import one or more OHLCV CSV files", type=["csv"], accept_multiple_files=True, help="Each file may contain one or many symbols. Required columns: timestamp, symbol, open, high, low, close, volume.")
     if st.button("Load files into historical workspace", disabled=not uploads, use_container_width=True):
         try:
             grouped = {}
-            cache = BarCache(HISTORY_DIR / "bars", store)
             for upload in uploads:
                 bars = load_bars_csv_stream(io.StringIO(upload.getvalue().decode("utf-8-sig")), settings.timezone)
                 for bar in bars: grouped.setdefault(bar.symbol, []).append(bar)
+            imported_paths = {}
             for symbol in grouped:
                 grouped[symbol].sort(key=lambda bar: bar.timestamp)
-                cache.write(grouped[symbol], feed="imported", adjustment="raw")
+                imported_paths[symbol] = cache.write(grouped[symbol], feed="imported", adjustment="raw")
             st.session_state.historical_bars = grouped
+            st.session_state.historical_execution_bars = {}
+            st.session_state.historical_feed = "imported"
+            st.session_state.historical_workspace_paths = {
+                symbol: str(path) for symbol, path in imported_paths.items()
+            }
+            st.session_state.historical_execution_workspace_paths = {}
+            st.session_state.historical_trade_workspace_paths = {}
+            st.session_state.historical_missing_symbols = []
+            save_workspace_manifest(
+                HISTORICAL_WORKSPACE_MANIFEST,
+                {
+                    "feed": "imported",
+                    "paths": [str(path) for path in imported_paths.values()],
+                    "symbols": sorted(grouped),
+                    "missing_symbols": [],
+                },
+            )
             st.success(f"Loaded and cached {sum(len(v) for v in grouped.values()):,} bars across {len(grouped)} symbols.")
         except Exception as exc: st.error(f"Import failed: {exc}")
     bars_by_symbol = st.session_state.historical_bars
@@ -385,60 +707,227 @@ def _historical_data(st, pd, settings: Settings) -> None:
         st.subheader("Loaded workspace")
         if st.session_state.historical_missing_symbols:
             st.warning("No bars were returned for: " + ", ".join(st.session_state.historical_missing_symbols))
-        rows=[{"symbol":symbol,"bars":len(bars),"start":bars[0].timestamp,"end":bars[-1].timestamp} for symbol,bars in sorted(bars_by_symbol.items())]
+        execution_bars_by_symbol = st.session_state.historical_execution_bars
+        rows=[
+            {
+                "symbol":symbol,
+                "minute bars":len(bars),
+                "10-second bars":len(execution_bars_by_symbol.get(symbol, [])),
+                "start":bars[0].timestamp,
+                "end":bars[-1].timestamp,
+            }
+            for symbol,bars in sorted(bars_by_symbol.items())
+        ]
         st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
+        if execution_bars_by_symbol:
+            st.success(
+                "Ten-second execution data loaded for: "
+                + ", ".join(sorted(execution_bars_by_symbol))
+                + ". One-minute bars remain the setup/context layer."
+            )
+            trade_symbols = sorted(
+                symbol
+                for symbol, path in (
+                    st.session_state.historical_trade_workspace_paths.items()
+                )
+                if Path(path).exists()
+            )
+            if trade_symbols:
+                st.success(
+                    "Exact raw-trade ordering available for: "
+                    + ", ".join(trade_symbols)
+                    + "."
+                )
+            else:
+                st.warning(
+                    "Ten-second bars are loaded, but raw-trade files were not found. "
+                    "Replay will retain conservative same-bar assumptions."
+                )
+        else:
+            st.info(
+                "No ten-second execution data is loaded yet. Replay will use "
+                "one-minute bars until historical trades are downloaded."
+            )
         available_dates = [
             bar.timestamp.astimezone(ZoneInfo(settings.timezone)).date()
             for bars in bars_by_symbol.values() for bar in bars
         ]
+        minimum_date, maximum_date = min(available_dates), max(available_dates)
+        saved_evaluation_start = st.session_state.get("historical_evaluation_start", minimum_date)
+        saved_evaluation_end = st.session_state.get("historical_evaluation_end", maximum_date)
+        st.session_state.historical_evaluation_start = min(max(saved_evaluation_start, minimum_date), maximum_date)
+        st.session_state.historical_evaluation_end = min(max(saved_evaluation_end, minimum_date), maximum_date)
         eval_cols = st.columns(2)
         evaluation_start_date = eval_cols[0].date_input(
             "Evaluation start",
-            value=min(available_dates),
-            min_value=min(available_dates),
-            max_value=max(available_dates),
+            min_value=minimum_date,
+            max_value=maximum_date,
             help="The first trading date to score. Earlier downloaded bars remain available only as lookback history.",
+            key="historical_evaluation_start",
         )
         evaluation_end_date = eval_cols[1].date_input(
             "Evaluation end",
-            value=max(available_dates),
-            min_value=min(available_dates),
-            max_value=max(available_dates),
+            min_value=minimum_date,
+            max_value=maximum_date,
             help="The last trading date to score.",
+            key="historical_evaluation_end",
         )
         local_zone = ZoneInfo(settings.timezone)
         evaluation_start = datetime.combine(evaluation_start_date, time.min, tzinfo=local_zone).astimezone(timezone.utc)
         evaluation_end = datetime.combine(evaluation_end_date, time.max, tzinfo=local_zone).astimezone(timezone.utc)
         if evaluation_end_date < evaluation_start_date:
             st.error("Evaluation end must be on or after evaluation start.")
-        spread = st.number_input("Estimated reconstructed spread (%)",min_value=0.01,max_value=5.0,value=0.50,step=0.05)
-        a,b=st.columns(2)
+        replay_profile = st.selectbox(
+            "Historical replay profile",
+            list(HISTORICAL_REPLAY_PROFILES),
+            key="historical_replay_profile",
+            help=(
+                "Premarket validation affects historical reconstruction and replay only. "
+                "It does not change the live or paper-trading configuration."
+            ),
+        )
+        replay_settings = historical_replay_settings(settings, replay_profile)
+        if replay_profile == "Premarket validation":
+            st.info(
+                "Replay-only validation begins at 7:00 a.m. Eastern and allows the "
+                "larger pullbacks and indicator extensions observed in the Ross sample. "
+                "The one-minute flagpole requirements remain strict; loaded ten-second "
+                "data also enables experimental micro-pullback and reversal/reclaim setups."
+            )
+        guardrail_preset = st.selectbox(
+            "Replay-only experimental guardrails",
+            list(REPLAY_GUARDRAIL_PRESETS),
+            key="historical_guardrail_preset",
+            help=(
+                "These controls affect historical portfolio replay only. They do "
+                "not change live or paper-trading behavior."
+            ),
+        )
+        replay_guardrails = REPLAY_GUARDRAIL_PRESETS[guardrail_preset]
+        if replay_guardrails.enabled:
+            st.info(
+                "This run will test the selected guardrails against the same "
+                "candidate and market-data history. Filtered opportunities will "
+                "appear under Portfolio rejections."
+            )
+        spread = st.number_input("Estimated reconstructed spread (%)",min_value=0.01,max_value=5.0,value=float(st.session_state.get("historical_spread_percent", 0.50)),step=0.05,key="historical_spread_percent")
+        workspace_feed = st.session_state.historical_feed or manifest.get("feed", "sip")
+        workspace_paths = {
+            symbol: Path(value)
+            for symbol, value in st.session_state.historical_workspace_paths.items()
+            if symbol in bars_by_symbol and Path(value).exists()
+        }
+        workspace_manifest = {
+            "feed": workspace_feed,
+            "paths": [str(path) for path in workspace_paths.values()],
+            "execution_paths": list(
+                st.session_state.historical_execution_workspace_paths.values()
+            ),
+            "trade_paths": list(
+                st.session_state.historical_trade_workspace_paths.values()
+            ),
+            "symbols": sorted(bars_by_symbol),
+            "missing_symbols": st.session_state.historical_missing_symbols,
+            "evaluation_start": evaluation_start_date.isoformat(),
+            "evaluation_end": evaluation_end_date.isoformat(),
+            "spread_percent": spread,
+            "replay_profile": replay_profile,
+            "guardrail_preset": guardrail_preset,
+        }
+        decision_source = execution_bars_by_symbol or bars_by_symbol
+        decision_minutes = sorted({
+            bar.timestamp for bars in decision_source.values() for bar in bars
+            if evaluation_start <= bar.timestamp <= evaluation_end
+            and replay_settings.trade_window_start
+            <= bar.timestamp.astimezone(local_zone).time()
+            <= replay_settings.trade_window_end
+        })
+        a,b,c=st.columns(3)
         invalid_evaluation_window = evaluation_end_date < evaluation_start_date
         if a.button("Reconstruct candidate history",use_container_width=True,disabled=invalid_evaluation_window):
             try:
-                decision_minutes = sorted({
-                    bar.timestamp for bars in bars_by_symbol.values() for bar in bars
-                    if evaluation_start <= bar.timestamp <= evaluation_end
-                    and settings.trade_window_start <= bar.timestamp.astimezone(local_zone).time() <= settings.trade_window_end
-                })
-                count=CandidateReconstructor(settings,store).reconstruct(
+                count=CandidateReconstructor(replay_settings,store).reconstruct(
                     bars_by_symbol,
+                    execution_bars_by_symbol=execution_bars_by_symbol or None,
                     decision_minutes=decision_minutes,
                     estimated_spread_percent=Decimal(str(spread/100)),
                 )
+                save_workspace_manifest(HISTORICAL_WORKSPACE_MANIFEST, workspace_manifest)
                 st.success(f"Recorded {count:,} reconstructed point-in-time scanner rows."); st.rerun()
             except Exception as exc: st.error(f"Reconstruction failed: {exc}")
-        if b.button("Run portfolio replay",use_container_width=True,disabled=invalid_evaluation_window):
+        if b.button(
+            "Run portfolio replay",
+            use_container_width=True,
+            disabled=invalid_evaluation_window,
+            help=(
+                "Uses the existing reconstructed candidate history. Choose this "
+                "when comparing replay-only guardrail presets."
+            ),
+        ):
             try:
-                result=PortfolioReplayEngine(settings,store).run(
+                result=PortfolioReplayEngine(replay_settings,store).run(
                     bars_by_symbol,
+                    execution_bars_by_symbol=execution_bars_by_symbol or None,
+                    execution_trade_paths_by_symbol={
+                        symbol: Path(path)
+                        for symbol, path in (
+                            st.session_state.historical_trade_workspace_paths.items()
+                        )
+                        if symbol in bars_by_symbol and Path(path).exists()
+                    } or None,
                     source="reconstructed",
-                    feed="imported",
+                    feed=workspace_feed,
                     evaluation_start=evaluation_start,
                     evaluation_end=evaluation_end,
+                    guardrails=replay_guardrails,
                 )
                 st.session_state.portfolio_result=result
-                st.success(f"Portfolio replay complete: {len(result.accepted_trades)} accepted trades, {len(result.rejected_trades)} portfolio-gate rejections."); st.rerun()
+                st.session_state.portfolio_result_profile=replay_profile
+                st.session_state.portfolio_result_guardrail_preset=guardrail_preset
+                save_workspace_manifest(HISTORICAL_WORKSPACE_MANIFEST, workspace_manifest)
+                st.success(
+                    f"Completed the replay using existing candidate history: "
+                    f"{len(result.accepted_trades)} accepted trades and "
+                    f"{len(result.rejected_trades)} rejections."
+                )
+                st.rerun()
+            except Exception as exc: st.error(f"Portfolio replay failed: {exc}")
+        if c.button("Reconstruct and run portfolio replay",use_container_width=True,disabled=invalid_evaluation_window):
+            try:
+                reconstructed_count = CandidateReconstructor(
+                    replay_settings, store
+                ).reconstruct(
+                    bars_by_symbol,
+                    execution_bars_by_symbol=execution_bars_by_symbol or None,
+                    decision_minutes=decision_minutes,
+                    estimated_spread_percent=Decimal(str(spread / 100)),
+                )
+                result=PortfolioReplayEngine(replay_settings,store).run(
+                    bars_by_symbol,
+                    execution_bars_by_symbol=execution_bars_by_symbol or None,
+                    execution_trade_paths_by_symbol={
+                        symbol: Path(path)
+                        for symbol, path in (
+                            st.session_state.historical_trade_workspace_paths.items()
+                        )
+                        if symbol in bars_by_symbol and Path(path).exists()
+                    } or None,
+                    source="reconstructed",
+                    feed=workspace_feed,
+                    evaluation_start=evaluation_start,
+                    evaluation_end=evaluation_end,
+                    guardrails=replay_guardrails,
+                )
+                st.session_state.portfolio_result=result
+                st.session_state.portfolio_result_profile=replay_profile
+                st.session_state.portfolio_result_guardrail_preset=guardrail_preset
+                save_workspace_manifest(HISTORICAL_WORKSPACE_MANIFEST, workspace_manifest)
+                st.success(
+                    f"Reconstructed {reconstructed_count:,} scanner rows and completed "
+                    f"the replay: {len(result.accepted_trades)} accepted trades, "
+                    f"{len(result.rejected_trades)} portfolio-gate rejections."
+                )
+                st.rerun()
             except Exception as exc: st.error(f"Portfolio replay failed: {exc}")
         diagnostic_rows = store.candidates(
             source="reconstructed",
@@ -465,6 +954,18 @@ def _historical_data(st, pd, settings: Settings) -> None:
     result=st.session_state.portfolio_result
     if result:
         st.subheader("Latest portfolio replay")
+        if st.session_state.portfolio_result_profile:
+            st.caption(
+                "Replay profile: "
+                + st.session_state.portfolio_result_profile
+                + ". Historical profiles do not alter live or paper settings."
+            )
+        if st.session_state.portfolio_result_guardrail_preset:
+            st.caption(
+                "Replay guardrails: "
+                + st.session_state.portfolio_result_guardrail_preset
+                + ". These do not alter live or paper settings."
+            )
         a,b,c,d=st.columns(4); a.metric("Passing symbols",len(result.symbols)); b.metric("Scoped candidates",result.candidate_count); c.metric("Accepted trades",len(result.accepted_trades)); d.metric("Net P/L",_fmt_money(result.metrics.get("net_profit")))
         tabs=st.tabs(["Accepted trades","Strategy diagnostics","Portfolio rejections","Notes"])
         with tabs[0]:

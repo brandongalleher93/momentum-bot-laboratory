@@ -190,14 +190,18 @@ Every live paper scanner cycle now records its complete point-in-time universe i
 from historical bars are labeled `reconstructed`, so the two evidence qualities
 cannot be confused.
 
-Historical minute bars are cached as Parquet files under `output/history/bars/`.
+Historical minute bars are cached under `output/history/bars/`. Raw historical
+trades and derived ten-second bars are cached under `output/history/trades/` and
+`output/history/bars_10s/`.
 The history subsystem includes:
 
 - `HistoryStore` for scanner snapshots, data provenance, and replay runs
-- `BarCache` and `AlpacaHistoricalDownloader` for paginated SDK downloads and
-  local SIP/IEX bar caching
+- `BarCache`, `TradeCache`, and `AlpacaHistoricalDownloader` for paginated SDK
+  downloads and local SIP/IEX caching
+- deterministic aggregation of historical trades into completed ten-second bars
 - `CandidateReconstructor` for explicitly approximate historical candidate lists
-- `PortfolioReplayEngine` for chronological portfolio gates across symbols
+- `PortfolioReplayEngine` for one-minute setup context, optional ten-second
+  breakout triggering, and chronological portfolio gates across symbols
 
 Use raw corporate-action adjustment for downloaded data and keep one feed per
 experiment. IEX remains suitable for software validation; SIP is the intended
@@ -256,6 +260,9 @@ the decision, the diagnostic becomes a critical lookahead rejection.
 - The live loop polls REST endpoints; streaming can be added after the polling state
   machine has been paper-tested.
 - Backtests use OHLCV bars and conservative assumptions, not exact exchange event order.
+- Historical replay includes experimental completed-ten-second micro-pullback
+  and reversal/reclaim detectors behind the reconstructed scanner gate. Their
+  thresholds and trade-frequency behavior still require out-of-sample validation.
 - Placeholder parameters must be validated on unseen dates and paper sessions.
 
 These are boundaries to test and improve—not details to hide.
