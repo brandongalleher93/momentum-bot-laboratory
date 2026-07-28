@@ -8,7 +8,14 @@ from pathlib import Path
 
 from bot.config import Settings
 from bot.gui import historical_replay_settings
-from bot.gui_support import load_profile, profile_filename, read_jsonl, save_profile
+from bot.gui_support import (
+    active_shadow_protection_rows,
+    load_profile,
+    profile_filename,
+    read_jsonl,
+    save_profile,
+)
+from bot.shadow_paper import shadow_paper_settings
 
 
 class GuiSupportTests(unittest.TestCase):
@@ -57,6 +64,57 @@ class GuiSupportTests(unittest.TestCase):
         self.assertIn(
             "historical_regular-hours_paper_validation",
             replay.parameter_profile,
+        )
+
+    def test_active_shadow_protections_describe_shadow_profile(self) -> None:
+        settings = shadow_paper_settings(
+            replace(
+                Settings(),
+                max_consecutive_losses_per_symbol_day=2,
+            )
+        )
+
+        rows = active_shadow_protection_rows(settings)
+        protections = {
+            row["Protection"]: row["Active shadow setting"] for row in rows
+        }
+
+        self.assertEqual(protections["Maximum risk per trade"], "$5.00")
+        self.assertEqual(protections["Maximum position value"], "$125.00")
+        self.assertEqual(protections["Daily loss/risk budget"], "$15.00")
+        self.assertEqual(protections["Maximum open positions"], "1")
+        self.assertEqual(
+            protections["Per-symbol daily loss stop"],
+            "Enabled — after 2 consecutive losses",
+        )
+        self.assertEqual(
+            protections["Re-entry cooldown after a loss"], "Disabled"
+        )
+        self.assertEqual(
+            protections["Three-trade cap per symbol/day"],
+            "Disabled — replay only",
+        )
+        self.assertEqual(protections["Profit target"], "2.0R")
+        self.assertEqual(
+            protections["Trading window"], "7:00 AM–11:30 AM ET"
+        )
+        self.assertEqual(protections["Execution data"], "Current IEX")
+        self.assertEqual(
+            protections["Broker order submission"],
+            "Disabled — no broker orders",
+        )
+
+    def test_active_shadow_protections_expose_unsafe_submission_state(self) -> None:
+        rows = active_shadow_protection_rows(
+            replace(Settings(), paper_order_submission_enabled=True)
+        )
+        protections = {
+            row["Protection"]: row["Active shadow setting"] for row in rows
+        }
+
+        self.assertEqual(
+            protections["Broker order submission"],
+            "Enabled — shadow mode blocked",
         )
 
 

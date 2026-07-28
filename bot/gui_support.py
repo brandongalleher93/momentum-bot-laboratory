@@ -116,5 +116,98 @@ def config_diff(defaults: Settings, current: Settings) -> list[dict[str, Any]]:
     return rows
 
 
+def active_shadow_protection_rows(settings: Settings) -> list[dict[str, str]]:
+    """Describe the settings enforced by the real-time shadow engine."""
+
+    loss_limit = settings.max_consecutive_losses_per_symbol_day
+    cooldown = settings.cooldown_after_loss_minutes
+    broker_submission = (
+        "Enabled — shadow mode blocked"
+        if settings.paper_order_submission_enabled
+        else "Disabled — no broker orders"
+    )
+    return [
+        {
+            "Protection": "Maximum risk per trade",
+            "Active shadow setting": _money(settings.max_risk_per_trade),
+        },
+        {
+            "Protection": "Maximum position value",
+            "Active shadow setting": _money(settings.max_position_value),
+        },
+        {
+            "Protection": "Daily loss/risk budget",
+            "Active shadow setting": _money(settings.max_daily_loss),
+        },
+        {
+            "Protection": "Maximum open positions",
+            "Active shadow setting": str(settings.max_open_positions),
+        },
+        {
+            "Protection": "Per-symbol daily loss stop",
+            "Active shadow setting": (
+                f"Enabled — after {loss_limit} consecutive losses"
+                if loss_limit is not None
+                else "Disabled"
+            ),
+        },
+        {
+            "Protection": "Re-entry cooldown after a loss",
+            "Active shadow setting": (
+                f"Enabled — {cooldown} minutes"
+                if cooldown is not None
+                else "Disabled"
+            ),
+        },
+        {
+            "Protection": "Three-trade cap per symbol/day",
+            "Active shadow setting": "Disabled — replay only",
+        },
+        {
+            "Protection": "Profit target",
+            "Active shadow setting": f"{settings.target_r_multiple}R",
+        },
+        {
+            "Protection": "Trading window",
+            "Active shadow setting": (
+                f"{_clock_time(settings.trade_window_start)}–"
+                f"{_clock_time(settings.trade_window_end)} "
+                f"{_timezone_label(settings.timezone)}"
+            ),
+        },
+        {
+            "Protection": "Scanner source",
+            "Active shadow setting": (
+                "Delayed SIP full universe before 9:30 AM ET; "
+                "SIP market movers afterward"
+            ),
+        },
+        {
+            "Protection": "Execution data",
+            "Active shadow setting": (
+                f"Current {settings.alpaca_data_feed.upper()}"
+            ),
+        },
+        {
+            "Protection": "Broker order submission",
+            "Active shadow setting": broker_submission,
+        },
+    ]
+
+
+def _money(value: Decimal) -> str:
+    return f"${value:,.2f}"
+
+
+def _clock_time(value: time) -> str:
+    return value.strftime("%I:%M %p").lstrip("0")
+
+
+def _timezone_label(value: str) -> str:
+    if value == "America/New_York":
+        return "ET"
+    return value
+
+
 def trade_table_rows(trades: Iterable[Any]) -> list[dict[str, Any]]:
     return [to_json_safe(trade) for trade in trades]

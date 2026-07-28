@@ -28,6 +28,7 @@ from bot.config import PROJECT_ROOT, Settings, load_settings, validate_settings
 from bot.event_log import to_json_safe
 from bot.gui_support import (
     PROTECTED_FIELDS,
+    active_shadow_protection_rows,
     config_diff,
     list_profiles,
     load_profile,
@@ -317,7 +318,22 @@ def _dashboard(st, pd, settings: Settings) -> None:
             "Uses live IEX data and local simulated fills. This mode never "
             "calls Alpaca's order-submission API."
         )
-        from bot.shadow_paper import ShadowTradeStore
+        from bot.shadow_paper import ShadowTradeStore, shadow_paper_settings
+
+        active_shadow_settings = shadow_paper_settings(settings)
+        with st.container(border=True):
+            st.markdown("#### Active Shadow Protections")
+            st.caption(
+                "Read-only view of the protections enforced during real-time "
+                "shadow testing. Historical replay presets do not apply here."
+            )
+            st.dataframe(
+                pd.DataFrame(
+                    active_shadow_protection_rows(active_shadow_settings)
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
 
         shadow_store = ShadowTradeStore(
             settings.output_dir
