@@ -13,6 +13,7 @@ import sys
 from dataclasses import fields, replace
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
+from html import escape
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -205,11 +206,66 @@ def _style(st) -> None:
     [data-testid="stSidebar"] { background: #12263a; }
     [data-testid="stSidebar"] * { color: #f7fafc; }
     .hero {padding:.35rem 0 .8rem 0}.hero h1{font-size:2rem;margin:0;color:#12263a}.hero p{margin:.2rem 0;color:#52606d}
-    .safety {border-left:5px solid #2a9d8f;background:#e8f5f2;padding:.7rem 1rem;border-radius:.3rem;margin:.25rem 0 1rem}
+    .status-strip {
+      display:grid;
+      grid-template-columns:.9fr 1fr 1fr 1fr .9fr 1fr 2fr;
+      background:#fff;
+      border:1px solid #dce3ea;
+      border-radius:.5rem;
+      box-shadow:0 1px 2px rgba(18,38,58,.04);
+      margin:.15rem 0 .4rem;
+      overflow:hidden;
+    }
+    .status-item {
+      min-width:0;
+      padding:.42rem .65rem .45rem;
+      border-right:1px solid #e7ecf1;
+    }
+    .status-item:last-child {border-right:0}
+    .status-label {
+      color:#627386;
+      font-size:.63rem;
+      font-weight:700;
+      letter-spacing:.06em;
+      line-height:1.1;
+      text-transform:uppercase;
+      white-space:nowrap;
+    }
+    .status-value {
+      color:#12263a;
+      font-size:.88rem;
+      font-weight:700;
+      line-height:1.25;
+      margin-top:.16rem;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+    }
+    .status-item:last-child .status-value {
+      font-size:.72rem;
+      overflow-wrap:anywhere;
+      white-space:normal;
+    }
+    .status-danger {color:#a43d2a}
+    .safety {
+      border-left:4px solid #2a9d8f;
+      background:#e8f5f2;
+      padding:.38rem .7rem;
+      border-radius:.3rem;
+      font-size:.8rem;
+      line-height:1.35;
+      margin:0 0 .8rem;
+    }
     .warning {border-left-color:#c8553d;background:#fff0ed}
     div[data-testid="stMetric"] {background:#fff;border:1px solid #dce3ea;padding:.7rem;border-radius:.55rem;box-shadow:0 1px 2px rgba(18,38,58,.04)}
     div[data-testid="stDataFrame"] {border:1px solid #dce3ea;border-radius:.4rem}
     .smallcaps {font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:#627386;font-weight:700}
+    @media (max-width: 900px) {
+      .status-strip {grid-template-columns:repeat(4, minmax(0, 1fr))}
+      .status-item {border-bottom:1px solid #e7ecf1}
+      .status-item:nth-child(4) {border-right:0}
+      .status-item:last-child {grid-column:span 2}
+    }
     </style>""", unsafe_allow_html=True)
 
 
@@ -217,17 +273,50 @@ def _status_header(st, settings: Settings) -> None:
     account = st.session_state.account or {}
     result = st.session_state.backtest_result
     metrics = calculate_metrics(result.trades) if result else {}
-    cols = st.columns(7)
-    cols[0].metric("Mode", "PAPER ONLY")
-    cols[1].metric("Order safety", "ARMED" if settings.paper_order_submission_enabled else "DISARMED")
-    cols[2].metric("Equity", _fmt_money(account.get("equity", settings.account_equity_assumption)))
-    cols[3].metric("Buying power", _fmt_money(account.get("buying_power")))
-    cols[4].metric("Open positions", str(account.get("open_positions", 0)))
-    cols[5].metric("Latest test P/L", _fmt_money(metrics.get("net_profit")))
-    cols[6].metric("Profile", settings.parameter_profile)
+    order_safety = (
+        "ARMED" if settings.paper_order_submission_enabled else "DISARMED"
+    )
+    status_items = [
+        ("Mode", "PAPER ONLY"),
+        ("Order safety", order_safety),
+        (
+            "Equity",
+            _fmt_money(
+                account.get("equity", settings.account_equity_assumption)
+            ),
+        ),
+        ("Buying power", _fmt_money(account.get("buying_power"))),
+        ("Open positions", str(account.get("open_positions", 0))),
+        ("Latest test P/L", _fmt_money(metrics.get("net_profit"))),
+        ("Profile", settings.parameter_profile),
+    ]
+    item_html = []
+    for label, value in status_items:
+        danger = (
+            " status-danger"
+            if label == "Order safety"
+            and settings.paper_order_submission_enabled
+            else ""
+        )
+        item_html.append(
+            '<div class="status-item">'
+            f'<div class="status-label">{escape(label)}</div>'
+            f'<div class="status-value{danger}">{escape(value)}</div>'
+            "</div>"
+        )
+    st.markdown(
+        '<div class="status-strip" role="status" '
+        'aria-label="System status">'
+        + "".join(item_html)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
     css = "safety warning" if settings.paper_order_submission_enabled else "safety"
     message = "Paper order submission is ARMED. The application still rejects live trading." if settings.paper_order_submission_enabled else "Paper order submission is disarmed. Backtesting and read-only monitoring are safe to use."
-    st.markdown(f'<div class="{css}"><b>Safety state:</b> {message}</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="{css}"><b>Safety state:</b> {escape(message)}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _sidebar(st) -> str:
