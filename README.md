@@ -207,6 +207,16 @@ Use raw corporate-action adjustment for downloaded data and keep one feed per
 experiment. IEX remains suitable for software validation; SIP is the intended
 feed for strategy evaluation.
 
+For live shadow testing before 9:30 a.m. Eastern, the scanner does not use
+Alpaca's market-movers endpoint because that endpoint retains the previous
+session's movers until the regular-market open. Instead, it refreshes a cached
+universe of active Nasdaq, NYSE, and AMEX securities once per minute, discovers
+gappers from 15-minute-delayed consolidated SIP snapshots, and computes volume
+and time-aligned RVOL from SIP history ending 16 minutes before the decision.
+Current IEX quotes and trades remain the execution source. This hybrid approach
+provides broader free-plan premarket discovery while explicitly retaining the
+15-minute discovery delay as a known limitation.
+
 ## Run one paper polling cycle
 
 With paper submission still disabled, this gathers data, evaluates candidates, and

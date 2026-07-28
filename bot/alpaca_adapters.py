@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Sequence
 from zoneinfo import ZoneInfo
@@ -227,11 +227,16 @@ class AlpacaPaperBroker:
 
 
 class AlpacaMarketData:
+    SCANNER_REFRESH_SECONDS = 60
+    PREMARKET_SNAPSHOT_BATCH_SIZE = 1000
+    PREMARKET_DISCOVERY_MULTIPLIER = 3
+
     def __init__(self, settings: Settings):
         validate_settings(settings, require_alpaca_keys=True)
         try:
             from alpaca.data.historical import StockHistoricalDataClient
             from alpaca.data.historical.screener import ScreenerClient
+            from alpaca.trading.client import TradingClient
         except ModuleNotFoundError as exc:
             raise RuntimeError("Install requirements.txt to use Alpaca commands.") from exc
         self.settings = settings
@@ -241,8 +246,40 @@ class AlpacaMarketData:
         self.screener = ScreenerClient(
             settings.alpaca_api_key, settings.alpaca_secret_key
         )
+        self.asset_client = TradingClient(
+            settings.alpaca_api_key,
+            settings.alpaca_secret_key,
+            paper=True,
+        )
+        self._scanner_cache_at: datetime | None = None
+        self._scanner_cache: list[MarketSnapshot] = []
+        self._universe_date: Any = None
+        self._universe_symbols: list[str] = []
 
     def get_scanner_snapshots(self, now: datetime) -> list[MarketSnapshot]:
+        if (
+            self._scanner_cache_at is not None
+            and now >= self._scanner_cache_at
+            and now - self._scanner_cache_at
+            < timedelta(seconds=self.SCANNER_REFRESH_SECONDS)
+        ):
+            return list(self._scanner_cache)
+
+        # Mark the attempt before network work begins. If Alpaca rejects or
+        # throttles a refresh, the unattended runner records one error and
+        # avoids hammering the endpoint again until the refresh interval ends.
+        self._scanner_cache_at = now
+        local = now.astimezone(ZoneInfo(self.settings.timezone))
+        if local.time() < time(9, 30):
+            values = self._get_premarket_scanner_snapshots(now)
+        else:
+            values = self._get_regular_scanner_snapshots(now)
+        self._scanner_cache = list(values)
+        return values
+
+    def _get_regular_scanner_snapshots(
+        self, now: datetime
+    ) -> list[MarketSnapshot]:
         from alpaca.data.enums import MarketType
         from alpaca.data.requests import MarketMoversRequest, StockSnapshotRequest
 
@@ -262,15 +299,21 @@ class AlpacaMarketData:
             if snapshot is None or snapshot.latest_quote is None or snapshot.daily_bar is None:
                 continue
             quote = snapshot.latest_quote
-            bars = self.get_completed_bars(mover.symbol, now, lookback_days=35)
+            bars, scanner_cutoff = self._get_scanner_bars(
+                mover.symbol, now
+            )
             values.append(
                 MarketSnapshot(
                     symbol=mover.symbol,
                     timestamp=now,
                     price=_decimal(mover.price),
                     percent_gain=_decimal(mover.percent_change) / Decimal("100"),
-                    rvol=self._time_aligned_rvol(bars, now),
-                    day_volume=int(snapshot.daily_bar.volume),
+                    rvol=self._time_aligned_rvol(
+                        bars, scanner_cutoff
+                    ),
+                    day_volume=self._session_volume(
+                        bars, scanner_cutoff
+                    ),
                     bid=_decimal(quote.bid_price),
                     ask=_decimal(quote.ask_price),
                     float_shares=None,
@@ -278,8 +321,160 @@ class AlpacaMarketData:
             )
         return values
 
+    def _get_premarket_scanner_snapshots(
+        self, now: datetime
+    ) -> list[MarketSnapshot]:
+        from alpaca.data.requests import StockSnapshotRequest
+
+        feed = self._delayed_sip_feed()
+        snapshots: dict[str, Any] = {}
+        symbols = self._get_premarket_universe(now)
+        for index in range(0, len(symbols), self.PREMARKET_SNAPSHOT_BATCH_SIZE):
+            batch = symbols[
+                index : index + self.PREMARKET_SNAPSHOT_BATCH_SIZE
+            ]
+            response = self.stock.get_stock_snapshot(
+                StockSnapshotRequest(
+                    symbol_or_symbols=batch,
+                    feed=feed,
+                )
+            )
+            snapshots.update(response)
+
+        seeds: list[tuple[str, datetime, Decimal, Decimal, Decimal, Decimal]] = []
+        for symbol, snapshot in snapshots.items():
+            seed = self._premarket_seed(symbol, snapshot, now)
+            if seed is None:
+                continue
+            _, _, price, percent_gain, _, _ = seed
+            if (
+                self.settings.min_price <= price <= self.settings.max_price
+                and percent_gain >= self.settings.min_percent_gain
+            ):
+                seeds.append(seed)
+        seeds.sort(key=lambda value: value[3], reverse=True)
+        discovery_limit = max(
+            self.settings.scanner_top,
+            self.settings.scanner_top
+            * self.PREMARKET_DISCOVERY_MULTIPLIER,
+        )
+
+        values: list[MarketSnapshot] = []
+        for symbol, timestamp, price, percent_gain, bid, ask in seeds[
+            :discovery_limit
+        ]:
+            bars, scanner_cutoff = self._get_scanner_bars(symbol, now)
+            values.append(
+                MarketSnapshot(
+                    symbol=symbol,
+                    timestamp=timestamp,
+                    price=price,
+                    percent_gain=percent_gain,
+                    rvol=self._time_aligned_rvol(
+                        bars, scanner_cutoff
+                    ),
+                    day_volume=self._session_volume(
+                        bars, scanner_cutoff
+                    ),
+                    bid=bid,
+                    ask=ask,
+                    float_shares=None,
+                )
+            )
+        return values
+
+    def _get_premarket_universe(self, now: datetime) -> list[str]:
+        from alpaca.trading.enums import (
+            AssetClass,
+            AssetExchange,
+            AssetStatus,
+        )
+        from alpaca.trading.requests import GetAssetsRequest
+
+        local_date = now.astimezone(
+            ZoneInfo(self.settings.timezone)
+        ).date()
+        if self._universe_date == local_date and self._universe_symbols:
+            return list(self._universe_symbols)
+        assets = self.asset_client.get_all_assets(
+            GetAssetsRequest(
+                status=AssetStatus.ACTIVE,
+                asset_class=AssetClass.US_EQUITY,
+            )
+        )
+        allowed_exchanges = {
+            AssetExchange.NASDAQ,
+            AssetExchange.NYSE,
+            AssetExchange.AMEX,
+        }
+        self._universe_symbols = sorted(
+            {
+                str(asset.symbol).upper()
+                for asset in assets
+                if bool(asset.tradable)
+                and asset.exchange in allowed_exchanges
+                and "." not in str(asset.symbol)
+                and "/" not in str(asset.symbol)
+            }
+        )
+        self._universe_date = local_date
+        return list(self._universe_symbols)
+
+    def _premarket_seed(
+        self,
+        symbol: str,
+        snapshot: Any,
+        now: datetime,
+    ) -> tuple[str, datetime, Decimal, Decimal, Decimal, Decimal] | None:
+        trade = getattr(snapshot, "latest_trade", None)
+        quote = getattr(snapshot, "latest_quote", None)
+        previous = getattr(snapshot, "previous_daily_bar", None)
+        if trade is None or quote is None or previous is None:
+            return None
+        zone = ZoneInfo(self.settings.timezone)
+        session_date = now.astimezone(zone).date()
+        if (
+            trade.timestamp.astimezone(zone).date() != session_date
+            or quote.timestamp.astimezone(zone).date() != session_date
+        ):
+            return None
+        price = _decimal(trade.price)
+        previous_close = _decimal(previous.close)
+        bid = _decimal(quote.bid_price)
+        ask = _decimal(quote.ask_price)
+        if (
+            price <= 0
+            or previous_close <= 0
+            or bid <= 0
+            or ask < bid
+        ):
+            return None
+        return (
+            symbol,
+            max(trade.timestamp, quote.timestamp),
+            price,
+            (price / previous_close) - Decimal("1"),
+            bid,
+            ask,
+        )
+
     def get_completed_bars(
         self, symbol: str, end: datetime, lookback_days: int = 2
+    ) -> list[Bar]:
+        return self._get_completed_bars_with_feed(
+            symbol,
+            end,
+            lookback_days=lookback_days,
+            feed=self._feed(),
+        )
+
+    def _get_completed_bars_with_feed(
+        self,
+        symbol: str,
+        end: datetime,
+        *,
+        lookback_days: int,
+        feed: Any,
     ) -> list[Bar]:
         from alpaca.data.requests import StockBarsRequest
         from alpaca.data.timeframe import TimeFrame
@@ -289,7 +484,7 @@ class AlpacaMarketData:
             timeframe=TimeFrame.Minute,
             start=end - timedelta(days=lookback_days),
             end=end,
-            feed=self._feed(),
+            feed=feed,
         )
         response = self.stock.get_stock_bars(request)
         raw_bars = response.data.get(symbol, [])
@@ -363,6 +558,46 @@ class AlpacaMarketData:
         from alpaca.data.enums import DataFeed
 
         return getattr(DataFeed, self.settings.alpaca_data_feed.upper())
+
+    @staticmethod
+    def _delayed_sip_feed() -> Any:
+        from alpaca.data.enums import DataFeed
+
+        return DataFeed.DELAYED_SIP
+
+    @staticmethod
+    def _sip_feed() -> Any:
+        from alpaca.data.enums import DataFeed
+
+        return DataFeed.SIP
+
+    def _get_scanner_bars(
+        self,
+        symbol: str,
+        now: datetime,
+    ) -> tuple[list[Bar], datetime]:
+        # Basic accounts can read consolidated SIP history when the request
+        # ends outside Alpaca's most-recent 15-minute subscription window.
+        cutoff = now - timedelta(minutes=16)
+        return (
+            self._get_completed_bars_with_feed(
+                symbol,
+                cutoff,
+                lookback_days=35,
+                feed=self._sip_feed(),
+            ),
+            cutoff,
+        )
+
+    def _session_volume(self, bars: Sequence[Bar], now: datetime) -> int:
+        zone = ZoneInfo(self.settings.timezone)
+        session_date = now.astimezone(zone).date()
+        return sum(
+            bar.volume
+            for bar in bars
+            if bar.timestamp.astimezone(zone).date() == session_date
+            and bar.timestamp <= now
+        )
 
     def _time_aligned_rvol(self, bars: Sequence[Bar], now: datetime) -> Decimal:
         eastern = ZoneInfo(self.settings.timezone)

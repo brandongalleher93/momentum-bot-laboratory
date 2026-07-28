@@ -404,6 +404,7 @@ class ShadowPaperEngine:
             result = {
                 "status": "outside_entry_window",
                 "timestamp": now,
+                "session_timestamp": local.isoformat(),
                 "entries": 0,
                 "exits": closed,
                 "summary": self.store.summary(),
@@ -412,6 +413,8 @@ class ShadowPaperEngine:
             return result
 
         entries = self._process_armed_setups(now)
+        scanner_snapshots = 0
+        scanner_candidates = 0
         bucket = now.replace(
             second=(now.second // 10) * 10, microsecond=0
         )
@@ -419,6 +422,8 @@ class ShadowPaperEngine:
             self._last_scan_bucket = bucket
             snapshots = self.market_data.get_scanner_snapshots(now)
             outcome = self.scanner.scan(snapshots)
+            scanner_snapshots = len(snapshots)
+            scanner_candidates = len(outcome.candidates)
             self.history.record_scan(
                 snapshots, outcome.diagnostics, source="captured"
             )
@@ -438,9 +443,17 @@ class ShadowPaperEngine:
         result = {
             "status": "completed",
             "timestamp": now,
+            "session_timestamp": local.isoformat(),
+            "scanner_source": (
+                "delayed_sip_full_premarket_universe"
+                if local.time() < time(9, 30)
+                else "sip_market_movers"
+            ),
             "entries": entries,
             "exits": closed,
             "armed_setups": len(self._armed_setups),
+            "scanner_snapshots": scanner_snapshots,
+            "scanner_candidates": scanner_candidates,
             "summary": self.store.summary(),
         }
         self.events.append({"event": "shadow_cycle", **result})
@@ -455,7 +468,17 @@ class ShadowPaperEngine:
                 self.run_once(now)
                 return
             if local.time() >= self.settings.trade_window_start:
-                self.run_once(now)
+                try:
+                    self.run_once(now)
+                except Exception as exc:
+                    self.events.append(
+                        {
+                            "event": "shadow_cycle_error",
+                            "timestamp": now,
+                            "error_type": type(exc).__name__,
+                            "message": str(exc),
+                        }
+                    )
             clock_time.sleep(self.settings.poll_seconds)
 
     def _detect_setup(self, symbol: str, now: datetime) -> Setup | None:

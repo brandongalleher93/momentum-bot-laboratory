@@ -210,6 +210,11 @@ class ShadowPaperTests(unittest.TestCase):
             result = engine.run_once(self.now)
 
             self.assertEqual(result["entries"], 1)
+            self.assertEqual(
+                result["scanner_source"],
+                "delayed_sip_full_premarket_universe",
+            )
+            self.assertIn("-04:00", result["session_timestamp"])
             self.assertEqual(len(store.open_trades()), 1)
             self.assertEqual(
                 store.open_trades()[0].entry_price, Decimal("5.02")
