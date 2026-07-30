@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Iterator, Protocol, Sequence
+from typing import Callable, Iterator, Protocol, Sequence
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -350,12 +350,16 @@ class ShadowTradeStore:
 class ShadowPaperEngine:
     """Forward-test the strategy locally while broker submission stays disarmed."""
 
+    ENTRY_QUOTE_MAX_AGE_SECONDS = 10
+    EXIT_QUOTE_MAX_AGE_SECONDS = 30
+
     def __init__(
         self,
         settings: Settings,
         market_data: ShadowMarketData,
         *,
         store: ShadowTradeStore | None = None,
+        clock: Callable[[], datetime] | None = None,
     ):
         validate_settings(settings, require_alpaca_keys=True)
         if settings.paper_order_submission_enabled:
@@ -366,6 +370,7 @@ class ShadowPaperEngine:
             raise ValueError("Shadow mode requires verified paper-only settings.")
         self.settings = settings
         self.market_data = market_data
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
         self.store = store or ShadowTradeStore(
             settings.output_dir / "shadow_paper" / "shadow_trades.sqlite3"
         )
@@ -388,7 +393,8 @@ class ShadowPaperEngine:
         self._last_scan_bucket: datetime | None = None
 
     def run_once(self, now: datetime | None = None) -> dict:
-        now = now or datetime.now(timezone.utc)
+        live_cycle = now is None
+        now = now or self._clock()
         if now.tzinfo is None:
             raise ValueError("Shadow cycle time must be timezone-aware.")
         closed = self._manage_open_trades(now)
@@ -407,6 +413,30 @@ class ShadowPaperEngine:
                 "session_timestamp": local.isoformat(),
                 "entries": 0,
                 "exits": closed,
+                "summary": self.store.summary(),
+            }
+            self.events.append({"event": "shadow_cycle", **result})
+            return result
+
+        if self.store.open_trades():
+            self._armed_setups.clear()
+            result = {
+                "status": "completed",
+                "timestamp": now,
+                "session_timestamp": local.isoformat(),
+                "scanner_source": (
+                    "delayed_sip_full_premarket_universe"
+                    if local.time() < time(9, 30)
+                    else "sip_market_movers"
+                ),
+                "entries": 0,
+                "exits": closed,
+                "armed_setups": 0,
+                "scanner_snapshots": 0,
+                "scanner_candidates": 0,
+                "scanner_skipped_reason": (
+                    "Open-position monitoring has priority."
+                ),
                 "summary": self.store.summary(),
             }
             self.events.append({"event": "shadow_cycle", **result})
@@ -435,10 +465,14 @@ class ShadowPaperEngine:
                     for trade in self.store.open_trades()
                 ):
                     continue
-                setup = self._detect_setup(candidate.symbol, now)
+                decision_time = self._clock() if live_cycle else now
+                setup = self._detect_setup(
+                    candidate.symbol, decision_time
+                )
                 if setup is not None:
                     self._armed_setups[candidate.symbol] = setup
-            entries += self._process_armed_setups(now)
+            entry_time = self._clock() if live_cycle else now
+            entries += self._process_armed_setups(entry_time)
 
         result = {
             "status": "completed",
@@ -462,14 +496,14 @@ class ShadowPaperEngine:
     def run_forever(self) -> None:
         zone = ZoneInfo(self.settings.timezone)
         while True:
-            now = datetime.now(timezone.utc)
+            now = self._clock()
             local = now.astimezone(zone)
             if local.weekday() >= 5 or local.time() > self.settings.trade_window_end:
-                self.run_once(now)
+                self.run_once()
                 return
             if local.time() >= self.settings.trade_window_start:
                 try:
-                    self.run_once(now)
+                    self.run_once()
                 except Exception as exc:
                     self.events.append(
                         {
@@ -511,8 +545,29 @@ class ShadowPaperEngine:
             if now > setup.expires_at:
                 del self._armed_setups[symbol]
                 continue
-            quote = self.market_data.get_latest_quote(symbol)
-            if not self._quote_is_current(quote, now):
+            quote = self._get_quote_or_log(symbol, now, stage="entry")
+            if quote is None:
+                del self._armed_setups[symbol]
+                continue
+            if not self._quote_is_current(
+                quote,
+                now,
+                max_age_seconds=self.ENTRY_QUOTE_MAX_AGE_SECONDS,
+            ):
+                self.events.append(
+                    {
+                        "event": "shadow_quote_rejected",
+                        "stage": "entry",
+                        "symbol": symbol,
+                        "reason": "Entry quote is stale or future-dated.",
+                        "quote_timestamp": quote.timestamp,
+                        "cycle_timestamp": now,
+                        "quote_age_seconds": self._quote_age_seconds(
+                            quote, now
+                        ),
+                    }
+                )
+                del self._armed_setups[symbol]
                 continue
             entry = self.strategy.check_entry(setup, quote)
             self.logger.log(entry.diagnostic)
@@ -533,6 +588,24 @@ class ShadowPaperEngine:
                 del self._armed_setups[symbol]
                 continue
             if quote.ask > plan.maximum_entry_price:
+                del self._armed_setups[symbol]
+                continue
+            if quote.bid <= plan.stop_price:
+                self.events.append(
+                    {
+                        "event": "shadow_quote_rejected",
+                        "stage": "entry",
+                        "symbol": symbol,
+                        "reason": (
+                            "Current bid is at or below the protective stop."
+                        ),
+                        "quote_timestamp": quote.timestamp,
+                        "cycle_timestamp": now,
+                        "bid": quote.bid,
+                        "ask": quote.ask,
+                        "stop_price": plan.stop_price,
+                    }
+                )
                 del self._armed_setups[symbol]
                 continue
             actual_risk_per_share = quote.ask - plan.stop_price
@@ -559,7 +632,24 @@ class ShadowPaperEngine:
                 status="open",
             )
             self.store.record_entry(trade)
-            self.events.append({"event": "shadow_entry", "trade": trade})
+            self.events.append(
+                {
+                    "event": "shadow_entry",
+                    "trade": trade,
+                    "execution": {
+                        "cycle_timestamp": now,
+                        "quote_timestamp": quote.timestamp,
+                        "quote_age_seconds": self._quote_age_seconds(
+                            quote, now
+                        ),
+                        "bid": quote.bid,
+                        "ask": quote.ask,
+                        "spread_percent": quote.spread_percent,
+                        "bid_above_stop": quote.bid - plan.stop_price,
+                        "planned_risk": trade.initial_risk,
+                    },
+                }
+            )
             del self._armed_setups[symbol]
             entries += 1
             if len(self.store.open_trades()) >= self.settings.max_open_positions:
@@ -570,8 +660,32 @@ class ShadowPaperEngine:
         closed_count = 0
         zone = ZoneInfo(self.settings.timezone)
         for trade in self.store.open_trades():
-            quote = self.market_data.get_latest_quote(trade.symbol)
-            if not self._quote_is_current(quote, now):
+            quote = self._get_quote_or_log(
+                trade.symbol, now, stage="exit"
+            )
+            if quote is None:
+                continue
+            if quote.timestamp <= trade.entry_time:
+                self.events.append(
+                    {
+                        "event": "shadow_quote_rejected",
+                        "stage": "exit",
+                        "symbol": trade.symbol,
+                        "trade_id": trade.trade_id,
+                        "reason": (
+                            "Exit quote did not advance beyond the entry quote."
+                        ),
+                        "entry_timestamp": trade.entry_time,
+                        "quote_timestamp": quote.timestamp,
+                        "cycle_timestamp": now,
+                    }
+                )
+                continue
+            if not self._quote_is_current(
+                quote,
+                now,
+                max_age_seconds=self.EXIT_QUOTE_MAX_AGE_SECONDS,
+            ):
                 self.events.append(
                     {
                         "event": "shadow_stale_quote",
@@ -616,7 +730,43 @@ class ShadowPaperEngine:
                 exit_price=price,
                 reason=reason,
             )
-            self.events.append({"event": "shadow_exit", "trade": closed})
+            realized_loss = max(
+                -(closed.realized_pnl or Decimal("0")),
+                Decimal("0"),
+            )
+            stop_slippage_per_share = (
+                max(trade.stop_price - price, Decimal("0"))
+                if reason == "Shadow protective stop reached."
+                else Decimal("0")
+            )
+            self.events.append(
+                {
+                    "event": "shadow_exit",
+                    "trade": closed,
+                    "execution": {
+                        "cycle_timestamp": now,
+                        "quote_timestamp": quote.timestamp,
+                        "quote_age_seconds": self._quote_age_seconds(
+                            quote, now
+                        ),
+                        "bid": quote.bid,
+                        "ask": quote.ask,
+                        "planned_risk": trade.initial_risk,
+                        "realized_loss": realized_loss,
+                        "risk_overrun": max(
+                            realized_loss - trade.initial_risk,
+                            Decimal("0"),
+                        ),
+                        "stop_slippage_per_share": (
+                            stop_slippage_per_share
+                        ),
+                        "stop_slippage_total": (
+                            stop_slippage_per_share
+                            * Decimal(trade.quantity)
+                        ),
+                    },
+                }
+            )
             closed_count += 1
         return closed_count
 
@@ -632,9 +782,45 @@ class ShadowPaperEngine:
             and bar.timestamp <= now
         ]
 
+    def _get_quote_or_log(
+        self,
+        symbol: str,
+        now: datetime,
+        *,
+        stage: str,
+    ) -> Quote | None:
+        try:
+            return self.market_data.get_latest_quote(symbol)
+        except Exception as exc:
+            self.events.append(
+                {
+                    "event": "shadow_quote_error",
+                    "stage": stage,
+                    "symbol": symbol,
+                    "cycle_timestamp": now,
+                    "error_type": type(exc).__name__,
+                    "message": str(exc),
+                }
+            )
+            return None
+
     @staticmethod
-    def _quote_is_current(quote: Quote, now: datetime) -> bool:
+    def _quote_age_seconds(quote: Quote, now: datetime) -> Decimal:
+        age = now - quote.timestamp.astimezone(now.tzinfo)
+        return Decimal(str(age.total_seconds()))
+
+    @staticmethod
+    def _quote_is_current(
+        quote: Quote,
+        now: datetime,
+        *,
+        max_age_seconds: int,
+    ) -> bool:
         if quote.timestamp.tzinfo is None:
             return False
         age = now - quote.timestamp.astimezone(now.tzinfo)
-        return timedelta(seconds=-2) <= age <= timedelta(seconds=30)
+        return (
+            timedelta(seconds=-2)
+            <= age
+            <= timedelta(seconds=max_age_seconds)
+        )

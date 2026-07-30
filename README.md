@@ -270,8 +270,13 @@ python -m bot shadow
 Trades survive a restart in
 `output/shadow_paper/shadow_trades.sqlite3`; detailed cycle, entry, exit, and
 stale-quote events are written to `output/shadow_paper/events.jsonl`. Shadow
-fills use the observed ask for entries and bid for exits. Quotes older than 30
-seconds are ignored.
+fills use the observed ask for entries and bid for exits. Entry quotes older
+than 10 seconds are rejected; exit quotes older than 30 seconds or not newer
+than the entry quote are ignored. Invalid symbol quotes are logged and isolated
+without aborting the full cycle. While a position is open, monitoring takes
+priority and slow universe refreshes are skipped. Exit events retain observed
+stop slippage, realized loss, planned risk, and any risk overrun rather than
+assuming an unrealistically perfect stop fill.
 
 The current account has IEX real-time access, not SIP real-time access. Shadow
 results therefore test forward behavior and execution plumbing; they are not

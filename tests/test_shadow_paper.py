@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from dataclasses import replace
@@ -22,8 +23,11 @@ class FakeShadowMarketData:
         self.quote = quote or Quote(
             "TEST", now, Decimal("5.01"), Decimal("5.02")
         )
+        self.scanner_calls = 0
+        self.quote_calls = 0
 
     def get_scanner_snapshots(self, now):
+        self.scanner_calls += 1
         return [
             MarketSnapshot(
                 "TEST",
@@ -46,6 +50,9 @@ class FakeShadowMarketData:
         return []
 
     def get_latest_quote(self, symbol):
+        self.quote_calls += 1
+        if isinstance(self.quote, Exception):
+            raise self.quote
         return self.quote
 
 
@@ -116,6 +123,16 @@ def make_trade(now, trade_id="trade"):
         initial_risk=Decimal("1.20"),
         status="open",
     )
+
+
+def read_events(path):
+    if not path.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 class ShadowPaperTests(unittest.TestCase):
@@ -220,6 +237,40 @@ class ShadowPaperTests(unittest.TestCase):
                 store.open_trades()[0].entry_price, Decimal("5.02")
             )
 
+    def test_live_cycle_refreshes_decision_time_after_slow_scan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = self.settings(directory)
+            store = ShadowTradeStore(
+                Path(directory) / "shadow.sqlite3"
+            )
+            clock_value = [self.now]
+            quote = Quote(
+                "TEST",
+                self.now + timedelta(seconds=17),
+                Decimal("5.01"),
+                Decimal("5.02"),
+            )
+            data = FakeShadowMarketData(self.now, quote=quote)
+            original_scan = data.get_scanner_snapshots
+
+            def slow_scan(now):
+                clock_value[0] = self.now + timedelta(seconds=17)
+                return original_scan(now)
+
+            data.get_scanner_snapshots = slow_scan
+            engine = ShadowPaperEngine(
+                settings,
+                data,
+                store=store,
+                clock=lambda: clock_value[0],
+            )
+            engine._detect_setup = lambda symbol, now: make_setup(now)
+
+            result = engine.run_once()
+
+            self.assertEqual(result["entries"], 1)
+            self.assertEqual(len(store.open_trades()), 1)
+
     def test_shadow_cycle_does_not_enter_on_stale_quote(self):
         with tempfile.TemporaryDirectory() as directory:
             settings = self.settings(directory)
@@ -228,7 +279,7 @@ class ShadowPaperTests(unittest.TestCase):
             )
             stale_quote = Quote(
                 "TEST",
-                self.now - timedelta(minutes=2),
+                self.now - timedelta(seconds=17),
                 Decimal("5.01"),
                 Decimal("5.02"),
             )
@@ -243,6 +294,139 @@ class ShadowPaperTests(unittest.TestCase):
 
             self.assertEqual(result["entries"], 0)
             self.assertEqual(store.summary()["total_trades"], 0)
+            rejected = [
+                event
+                for event in read_events(engine.events.path)
+                if event["event"] == "shadow_quote_rejected"
+            ]
+            self.assertEqual(rejected[-1]["stage"], "entry")
+            self.assertEqual(
+                rejected[-1]["reason"],
+                "Entry quote is stale or future-dated.",
+            )
+
+    def test_shadow_cycle_rejects_entry_when_bid_is_at_stop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = self.settings(directory)
+            store = ShadowTradeStore(
+                Path(directory) / "shadow.sqlite3"
+            )
+            quote = Quote(
+                "TEST",
+                self.now,
+                Decimal("5.00"),
+                Decimal("5.02"),
+            )
+            engine = ShadowPaperEngine(
+                settings,
+                FakeShadowMarketData(self.now, quote=quote),
+                store=store,
+            )
+            engine._detect_setup = lambda symbol, now: replace(
+                make_setup(now),
+                stop_price=Decimal("5.00"),
+            )
+
+            result = engine.run_once(self.now)
+
+            self.assertEqual(result["entries"], 0)
+            self.assertEqual(store.summary()["total_trades"], 0)
+            rejected = [
+                event
+                for event in read_events(engine.events.path)
+                if event["event"] == "shadow_quote_rejected"
+            ]
+            self.assertEqual(
+                rejected[-1]["reason"],
+                "Current bid is at or below the protective stop.",
+            )
+
+    def test_bad_symbol_quote_is_logged_without_failing_cycle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = self.settings(directory)
+            store = ShadowTradeStore(
+                Path(directory) / "shadow.sqlite3"
+            )
+            data = FakeShadowMarketData(
+                self.now,
+                quote=ValueError(
+                    "Quote must have positive bid <= ask."
+                ),
+            )
+            engine = ShadowPaperEngine(settings, data, store=store)
+            engine._detect_setup = lambda symbol, now: make_setup(now)
+
+            result = engine.run_once(self.now)
+
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["entries"], 0)
+            errors = [
+                event
+                for event in read_events(engine.events.path)
+                if event["event"] == "shadow_quote_error"
+            ]
+            self.assertEqual(errors[-1]["symbol"], "TEST")
+            self.assertEqual(errors[-1]["stage"], "entry")
+
+    def test_open_position_monitoring_skips_scanner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = self.settings(directory)
+            store = ShadowTradeStore(
+                Path(directory) / "shadow.sqlite3"
+            )
+            store.record_entry(
+                make_trade(self.now - timedelta(minutes=1))
+            )
+            data = FakeShadowMarketData(self.now)
+            engine = ShadowPaperEngine(settings, data, store=store)
+
+            result = engine.run_once(self.now)
+
+            self.assertEqual(result["exits"], 0)
+            self.assertEqual(data.scanner_calls, 0)
+            self.assertEqual(
+                result["scanner_skipped_reason"],
+                "Open-position monitoring has priority.",
+            )
+
+    def test_exit_requires_quote_newer_than_entry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = self.settings(directory)
+            store = ShadowTradeStore(
+                Path(directory) / "shadow.sqlite3"
+            )
+            store.record_entry(make_trade(self.now))
+            same_quote = Quote(
+                "TEST",
+                self.now,
+                Decimal("4.85"),
+                Decimal("4.86"),
+            )
+            engine = ShadowPaperEngine(
+                settings,
+                FakeShadowMarketData(
+                    self.now + timedelta(seconds=5),
+                    quote=same_quote,
+                ),
+                store=store,
+            )
+
+            result = engine.run_once(
+                self.now + timedelta(seconds=5)
+            )
+
+            self.assertEqual(result["exits"], 0)
+            self.assertEqual(store.get("trade").status, "open")
+            rejected = [
+                event
+                for event in read_events(engine.events.path)
+                if event["event"] == "shadow_quote_rejected"
+            ]
+            self.assertEqual(rejected[-1]["stage"], "exit")
+            self.assertIn(
+                "did not advance",
+                rejected[-1]["reason"],
+            )
 
     def test_shadow_cycle_uses_conservative_quote_stop(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -272,6 +456,19 @@ class ShadowPaperTests(unittest.TestCase):
             self.assertEqual(closed.status, "closed")
             self.assertEqual(closed.exit_price, Decimal("4.85"))
             self.assertLess(closed.realized_pnl, 0)
+            exits = [
+                event
+                for event in read_events(engine.events.path)
+                if event["event"] == "shadow_exit"
+            ]
+            execution = exits[-1]["execution"]
+            self.assertEqual(
+                execution["stop_slippage_per_share"], "0.05"
+            )
+            self.assertEqual(execution["stop_slippage_total"], "0.50")
+            self.assertEqual(execution["planned_risk"], "1.20")
+            self.assertEqual(execution["realized_loss"], "1.70")
+            self.assertEqual(execution["risk_overrun"], "0.50")
 
     def test_two_symbol_losses_block_next_shadow_entry(self):
         with tempfile.TemporaryDirectory() as directory:
