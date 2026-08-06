@@ -17,6 +17,7 @@ LAUNCH_AGENT_FILENAME = f"{LAUNCH_AGENT_LABEL}.plist"
 AUTOMATIC_START_LOCAL_HOUR = 6
 AUTOMATIC_START_LOCAL_MINUTE = 0
 WEEKDAYS = tuple(range(1, 6))
+AUTOMATIC_LAUNCHER_RELATIVE_PATH = Path("launcher/automatic_shadow.command")
 
 
 def launch_agent_path(home: Path | None = None) -> Path:
@@ -27,20 +28,21 @@ def launch_agent_path(home: Path | None = None) -> Path:
 def launch_agent_payload(
     *,
     project_root: Path = PROJECT_ROOT,
-    python_path: Path | None = None,
+    home: Path | None = None,
 ) -> dict:
     root = project_root.resolve()
-    interpreter = (python_path or root / ".venv" / "bin" / "python").resolve()
-    runner_log = root / "output" / "shadow_paper" / "runner.log"
+    launcher = (root / AUTOMATIC_LAUNCHER_RELATIVE_PATH).resolve()
+    log_path = (home or Path.home()) / "Library" / "Logs" / "Trading Bot"
+    launch_log = log_path / "automatic_shadow_launcher.log"
     return {
         "Label": LAUNCH_AGENT_LABEL,
         "ProgramArguments": [
-            str(interpreter),
-            "-m",
-            "bot",
-            "shadow",
+            "/usr/bin/open",
+            "-g",
+            "-a",
+            "Terminal",
+            str(launcher),
         ],
-        "WorkingDirectory": str(root),
         "RunAtLoad": True,
         "StartCalendarInterval": [
             {
@@ -51,9 +53,8 @@ def launch_agent_payload(
             for weekday in WEEKDAYS
         ],
         "ProcessType": "Standard",
-        "EnvironmentVariables": {"PYTHONUNBUFFERED": "1"},
-        "StandardOutPath": str(runner_log),
-        "StandardErrorPath": str(runner_log),
+        "StandardOutPath": str(launch_log),
+        "StandardErrorPath": str(launch_log),
         "Umask": 0o077,
         "AssociatedBundleIdentifiers": ["local.brandon.tradingbot"],
     }
@@ -91,11 +92,17 @@ def install_launch_agent(
         raise FileNotFoundError(
             f"Project interpreter not found at {interpreter}."
         )
+    launcher = root / AUTOMATIC_LAUNCHER_RELATIVE_PATH
+    if not launcher.is_file() or not os.access(launcher, os.X_OK):
+        raise FileNotFoundError(
+            f"Executable automatic shadow launcher not found at {launcher}."
+        )
 
     destination = launch_agent_path(home)
     _refuse_unrelated_existing_agent(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    (root / "output" / "shadow_paper").mkdir(parents=True, exist_ok=True)
+    log_directory = (home or Path.home()) / "Library" / "Logs" / "Trading Bot"
+    log_directory.mkdir(parents=True, exist_ok=True)
 
     domain = f"gui/{uid if uid is not None else os.getuid()}"
     subprocess.run(
@@ -108,7 +115,7 @@ def install_launch_agent(
         destination,
         launch_agent_payload(
             project_root=root,
-            python_path=interpreter,
+            home=home,
         ),
     )
     completed = subprocess.run(

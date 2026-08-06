@@ -18,17 +18,24 @@ from bot.shadow_schedule import (
 class ShadowScheduleTests(unittest.TestCase):
     def test_launch_agent_runs_shadow_on_weekdays_and_at_login(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "Trading Bot"
-            python = root / ".venv" / "bin" / "python"
+            base = Path(directory)
+            root = base / "Trading Bot"
+            home = base / "home"
             payload = launch_agent_payload(
                 project_root=root,
-                python_path=python,
+                home=home,
             )
 
         self.assertEqual(payload["Label"], LAUNCH_AGENT_LABEL)
         self.assertEqual(
             payload["ProgramArguments"],
-            [str(python.resolve()), "-m", "bot", "shadow"],
+            [
+                "/usr/bin/open",
+                "-g",
+                "-a",
+                "Terminal",
+                str((root / "launcher/automatic_shadow.command").resolve()),
+            ],
         )
         self.assertTrue(payload["RunAtLoad"])
         self.assertEqual(
@@ -39,6 +46,17 @@ class ShadowScheduleTests(unittest.TestCase):
             ],
         )
         self.assertNotIn("KeepAlive", payload)
+        self.assertNotIn("WorkingDirectory", payload)
+        self.assertEqual(
+            payload["StandardOutPath"],
+            str(
+                home
+                / "Library"
+                / "Logs"
+                / "Trading Bot"
+                / "automatic_shadow_launcher.log"
+            ),
+        )
 
     @patch("bot.shadow_schedule.platform.system", return_value="Darwin")
     @patch("bot.shadow_schedule.subprocess.run")
@@ -57,6 +75,9 @@ class ShadowScheduleTests(unittest.TestCase):
             interpreter = root / ".venv" / "bin" / "python"
             interpreter.parent.mkdir(parents=True)
             interpreter.touch()
+            launcher = root / "launcher" / "automatic_shadow.command"
+            launcher.parent.mkdir(parents=True)
+            launcher.touch(mode=0o700)
             home = base / "home"
 
             installed = install_launch_agent(
@@ -70,8 +91,14 @@ class ShadowScheduleTests(unittest.TestCase):
                 payload = plistlib.load(source)
             self.assertEqual(payload["Label"], LAUNCH_AGENT_LABEL)
             self.assertEqual(
-                payload["ProgramArguments"][0],
-                str(interpreter.resolve()),
+                payload["ProgramArguments"],
+                [
+                    "/usr/bin/open",
+                    "-g",
+                    "-a",
+                    "Terminal",
+                    str(launcher.resolve()),
+                ],
             )
             self.assertEqual(installed.stat().st_mode & 0o777, 0o600)
 

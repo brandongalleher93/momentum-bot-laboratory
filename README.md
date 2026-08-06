@@ -298,9 +298,13 @@ Remove the automatic schedule:
 
 The LaunchAgent configuration is stored in the current user's
 `~/Library/LaunchAgents` directory and contains paths only; Alpaca credentials
-remain in the ignored project `.env` file. The dashboard continues to show the
-active shadow process. When automatic scheduling is installed, its Stop button
-ends only the current day's observation; the next weekday remains scheduled.
+remain in the ignored project `.env` file. Because macOS blocks background
+agents from directly executing project files in the protected Documents folder,
+the schedule asks Terminal to run `launcher/automatic_shadow.command` in the
+background. A brief Terminal tab may appear at login or 6:00 a.m.; it starts the
+detached runner and then finishes. The dashboard continues to show the active
+shadow process. When automatic scheduling is installed, its Stop button ends
+only the current day's observation; the next weekday remains scheduled.
 
 Trades survive a restart in
 `output/shadow_paper/shadow_trades.sqlite3`; detailed cycle, entry, exit, and
