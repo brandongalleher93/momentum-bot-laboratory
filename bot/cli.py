@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from bot.alpaca_adapters import AlpacaMarketData, AlpacaPaperBroker
 from bot.app import TradingBot
 from bot.backtest import BacktestEngine, load_bars_csv, trade_rows
-from bot.config import load_settings, validate_settings
+from bot.config import PROJECT_ROOT, load_settings, validate_settings
 from bot.event_log import to_json_safe, write_csv
 from bot.review import build_backtest_report
 
@@ -38,6 +39,15 @@ def build_parser() -> argparse.ArgumentParser:
     shadow.add_argument(
         "--once", action="store_true", help="Run one shadow cycle and exit."
     )
+    shadow_schedule = subcommands.add_parser(
+        "shadow-schedule",
+        help="Manage automatic weekday shadow observation on macOS.",
+    )
+    shadow_schedule.add_argument(
+        "action",
+        choices=("install", "status", "uninstall"),
+        help="Install, inspect, or remove the automatic schedule.",
+    )
 
     backtest = subcommands.add_parser(
         "backtest", help="Backtest one pre-screened symbol from OHLCV CSV data."
@@ -50,6 +60,48 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.command == "shadow-schedule":
+        from bot.shadow_schedule import (
+            install_launch_agent,
+            launch_agent_is_configured,
+            launch_agent_is_loaded,
+            launch_agent_path,
+            uninstall_launch_agent,
+        )
+
+        if args.action == "install":
+            settings = load_settings()
+            validate_settings(settings, require_alpaca_keys=True)
+            if settings.paper_order_submission_enabled:
+                raise ValueError(
+                    "Disarm paper order submission before installing the "
+                    "automatic shadow schedule."
+                )
+            path = install_launch_agent()
+            print(f"Automatic weekday shadow schedule installed: {path}")
+            print(
+                "It starts at 6:00 a.m. Mac local time and also at login; "
+                "the shadow engine enforces its 7:00–11:30 a.m. Eastern window."
+            )
+            return 0
+        if args.action == "uninstall":
+            removed = uninstall_launch_agent()
+            print(
+                "Automatic weekday shadow schedule removed."
+                if removed
+                else "Automatic weekday shadow schedule was not installed."
+            )
+            return 0
+
+        print(f"LaunchAgent file: {launch_agent_path()}")
+        print(
+            "Configured: "
+            + ("yes" if launch_agent_is_configured() else "no")
+        )
+        print("Loaded: " + ("yes" if launch_agent_is_loaded() else "no"))
+        return 0
+
     settings = load_settings()
 
     if args.command == "validate":
@@ -104,7 +156,15 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         else:
-            engine.run_forever()
+            from bot.shadow_runner import ShadowRunner
+
+            runner = ShadowRunner(
+                settings.output_dir,
+                sys.executable,
+                PROJECT_ROOT,
+            )
+            with runner.register_current_process():
+                engine.run_forever()
         return 0
 
     if args.command == "backtest":

@@ -267,6 +267,41 @@ window:
 python -m bot shadow
 ```
 
+### Automatic weekday shadow observation on macOS
+
+The project can install a per-user macOS LaunchAgent so shadow observation does
+not need to be started manually each trading morning:
+
+```bash
+./.venv/bin/python -m bot shadow-schedule install
+```
+
+The schedule starts at 6:00 a.m. in the Mac's current local timezone, which is
+7:00 a.m. Eastern while the Mac is set to Central time. It also starts once at
+login. The shadow engine still enforces its own Monday–Friday, 7:00–11:30 a.m.
+Eastern window and still refuses to run if paper order submission is armed.
+macOS starts a missed calendar job when the computer wakes; if the Mac remains
+shut down or asleep until after 11:30 a.m. Eastern, the missed market data cannot
+be recovered.
+
+Check whether the schedule is configured and loaded:
+
+```bash
+./.venv/bin/python -m bot shadow-schedule status
+```
+
+Remove the automatic schedule:
+
+```bash
+./.venv/bin/python -m bot shadow-schedule uninstall
+```
+
+The LaunchAgent configuration is stored in the current user's
+`~/Library/LaunchAgents` directory and contains paths only; Alpaca credentials
+remain in the ignored project `.env` file. The dashboard continues to show the
+active shadow process. When automatic scheduling is installed, its Stop button
+ends only the current day's observation; the next weekday remains scheduled.
+
 Trades survive a restart in
 `output/shadow_paper/shadow_trades.sqlite3`; detailed cycle, entry, exit, and
 stale-quote events are written to `output/shadow_paper/events.jsonl`. Shadow
