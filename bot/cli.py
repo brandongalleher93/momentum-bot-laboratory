@@ -45,8 +45,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     shadow_schedule.add_argument(
         "action",
-        choices=("install", "status", "uninstall"),
-        help="Install, inspect, or remove the automatic schedule.",
+        choices=("install", "start", "status", "uninstall"),
+        help="Install, start, inspect, or remove automatic shadow observation.",
     )
 
     backtest = subcommands.add_parser(
@@ -83,6 +83,29 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 "It starts at 6:00 a.m. Mac local time and also at login; "
                 "the shadow engine enforces its 7:00–11:30 a.m. Eastern window."
+            )
+            return 0
+        if args.action == "start":
+            settings = load_settings()
+            validate_settings(settings, require_alpaca_keys=True)
+            if settings.paper_order_submission_enabled:
+                raise ValueError(
+                    "Disarm paper order submission before starting shadow "
+                    "observation."
+                )
+            from bot.shadow_runner import ShadowRunner
+
+            runner = ShadowRunner(
+                settings.output_dir,
+                sys.executable,
+                PROJECT_ROOT,
+            )
+            active = runner.active_pid()
+            pid = runner.start()
+            print(
+                f"Shadow observation is already running with PID {pid}."
+                if active is not None
+                else f"Shadow observation started with PID {pid}."
             )
             return 0
         if args.action == "uninstall":
