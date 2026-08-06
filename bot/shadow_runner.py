@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 
 class ShadowRunner:
@@ -42,6 +44,30 @@ class ShadowRunner:
             )
         self.pid_path.write_text(f"{process.pid}\n", encoding="utf-8")
         return process.pid
+
+    @contextmanager
+    def register_current_process(self) -> Iterator[int]:
+        """Expose a directly launched shadow process to dashboard controls."""
+
+        pid = os.getpid()
+        active = self.active_pid()
+        if active is not None and active != pid:
+            raise RuntimeError(
+                f"Shadow observation is already running with PID {active}."
+            )
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.pid_path.write_text(f"{pid}\n", encoding="utf-8")
+        try:
+            yield pid
+        finally:
+            try:
+                registered = int(
+                    self.pid_path.read_text(encoding="utf-8").strip()
+                )
+            except (FileNotFoundError, ValueError):
+                registered = None
+            if registered == pid:
+                self.pid_path.unlink(missing_ok=True)
 
     def stop(self) -> bool:
         pid = self.active_pid()

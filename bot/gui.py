@@ -54,6 +54,7 @@ from bot.portfolio_backtest import (
 from bot.reconstruction import CandidateReconstructor
 from bot.review import build_backtest_report, calculate_metrics
 from bot.shadow_runner import ShadowRunner
+from bot.shadow_schedule import launch_agent_is_configured
 from bot.validation_set import (
     load_validation_targets,
     target_dates_by_symbol,
@@ -436,6 +437,7 @@ def _dashboard(st, pd, settings: Settings) -> None:
             PROJECT_ROOT,
         )
         shadow_pid = shadow_runner.active_pid()
+        automatic_shadow_schedule = launch_agent_is_configured()
         shadow_cols = st.columns(3)
         shadow_cols[0].metric(
             "Open shadow trades", shadow_summary["open_trades"]
@@ -490,6 +492,11 @@ def _dashboard(st, pd, settings: Settings) -> None:
                 "Continuous shadow observation is running. It will stop "
                 "automatically after the trading window."
             )
+        elif automatic_shadow_schedule:
+            st.info(
+                "Shadow observation is stopped for now. Automatic weekday "
+                "startup is installed for 6:00 a.m. Mac local time."
+            )
         else:
             st.info(
                 "Continuous shadow observation is stopped. Starting it does "
@@ -507,7 +514,11 @@ def _dashboard(st, pd, settings: Settings) -> None:
             shadow_runner.start()
             st.rerun()
         if runner_stop.button(
-            "Stop shadow observation",
+            (
+                "Stop shadow observation for today"
+                if automatic_shadow_schedule
+                else "Stop shadow observation"
+            ),
             use_container_width=True,
             disabled=shadow_pid is None,
         ):
