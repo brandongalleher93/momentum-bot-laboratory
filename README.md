@@ -321,6 +321,21 @@ The current account has IEX real-time access, not SIP real-time access. Shadow
 results therefore test forward behavior and execution plumbing; they are not
 directly comparable to SIP historical replay performance.
 
+After shadow observation stops and all positions are closed, expand
+**Post-session SIP execution audit** on the Dashboard and choose **Run
+post-session SIP audit**. The audit makes read-only historical market-data
+requests and compares each recorded IEX entry and exit with nearby consolidated
+SIP quotes. It labels rows as confirmed, discrepant, or unresolved and writes a
+separate report to `output/shadow_paper/execution_audit.json`; it never updates
+`shadow_trades.sqlite3`.
+
+For a contradicted price-based stop or target, the report can continue the SIP
+quote path through the configured trading-window end. This reconstruction is
+explicitly an estimate: it checks only the protective stop, profit target, and
+end-of-window mark. It does not reproduce intervening VWAP, EMA, or
+breakout-close exits, and unresolved rows are excluded from the estimated
+SIP-path P/L.
+
 ## Logs and traceability
 
 Detailed nested events use JSON Lines as the source of truth:
