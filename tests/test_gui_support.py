@@ -10,6 +10,7 @@ from bot.config import Settings
 from bot.gui import historical_replay_settings
 from bot.gui_support import (
     active_shadow_protection_rows,
+    execution_audit_table_rows,
     load_profile,
     profile_filename,
     read_jsonl,
@@ -116,6 +117,35 @@ class GuiSupportTests(unittest.TestCase):
             protections["Broker order submission"],
             "Enabled — shadow mode blocked",
         )
+
+    def test_execution_audit_rows_prioritize_discrepancies(self) -> None:
+        report = {
+            "rows": [
+                {
+                    "symbol": "GOOD",
+                    "entry_time": "2026-07-01T14:00:00+00:00",
+                    "status": "confirmed",
+                    "raw_pnl": "2.00",
+                },
+                {
+                    "symbol": "CHECK",
+                    "entry_time": "2026-07-02T14:00:00+00:00",
+                    "status": "discrepant",
+                    "raw_pnl": "-5.00",
+                    "sip_exit_bid": "5.10",
+                    "reconstruction": {
+                        "realized_pnl": "2.00",
+                        "reason": "SIP price path later reached the target.",
+                    },
+                },
+            ]
+        }
+
+        rows = execution_audit_table_rows(report)
+
+        self.assertEqual(rows[0]["symbol"], "CHECK")
+        self.assertEqual(rows[0]["raw P/L"], -5.0)
+        self.assertEqual(rows[0]["estimated SIP-path P/L"], 2.0)
 
 
 if __name__ == "__main__":

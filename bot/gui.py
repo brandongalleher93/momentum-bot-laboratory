@@ -31,6 +31,7 @@ from bot.gui_support import (
     PROTECTED_FIELDS,
     active_shadow_protection_rows,
     config_diff,
+    execution_audit_table_rows,
     list_profiles,
     load_profile,
     read_jsonl,
@@ -66,6 +67,9 @@ PROFILE_DIR = PROJECT_ROOT / "output" / "gui_profiles"
 RUN_DIR = PROJECT_ROOT / "output" / "gui_backtests"
 HISTORY_DIR = PROJECT_ROOT / "output" / "history"
 HISTORY_DB = HISTORY_DIR / "history.sqlite3"
+SHADOW_EXECUTION_AUDIT = (
+    PROJECT_ROOT / "output" / "shadow_paper" / "execution_audit.json"
+)
 HISTORICAL_WORKSPACE_MANIFEST = HISTORY_DIR / "active_workspace.json"
 INDEPENDENT_VALIDATION_MANIFESTS = {
     "Set 1 — June and July 2026": (
@@ -483,6 +487,117 @@ def _dashboard(st, pd, settings: Settings) -> None:
                 "No shadow trades yet. Results are saved automatically "
                 "once the shadow runner observes a qualifying setup."
             )
+
+        from bot.shadow_execution_audit import (
+            AlpacaSipQuoteProvider,
+            ShadowExecutionAuditor,
+            load_execution_audit,
+            save_execution_audit,
+        )
+
+        with st.expander("Post-session SIP execution audit", expanded=False):
+            st.caption(
+                "Read-only validation of recorded IEX entries and exits against "
+                "historical consolidated SIP quotes. The shadow trade ledger, "
+                "strategy, and broker settings are never changed."
+            )
+            audit_disabled = (
+                shadow_pid is not None
+                or shadow_summary["open_trades"] > 0
+                or not settings.alpaca_api_key
+                or not settings.alpaca_secret_key
+            )
+            if st.button(
+                "Run post-session SIP audit",
+                use_container_width=True,
+                disabled=audit_disabled,
+                help=(
+                    "Available after shadow observation stops and all positions "
+                    "are closed. It makes historical market-data requests only."
+                ),
+            ):
+                try:
+                    with st.spinner(
+                        "Comparing shadow fills with historical SIP quotes…"
+                    ):
+                        report = ShadowExecutionAuditor(
+                            active_shadow_settings,
+                            AlpacaSipQuoteProvider(settings),
+                        ).audit(shadow_store.all_trades())
+                        save_execution_audit(
+                            report,
+                            SHADOW_EXECUTION_AUDIT,
+                        )
+                    st.success(
+                        "SIP execution audit completed. The shadow ledger was "
+                        "not modified."
+                    )
+                except Exception as exc:
+                    st.error(
+                        "The SIP execution audit could not complete: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+
+            audit_report = load_execution_audit(SHADOW_EXECUTION_AUDIT)
+            if audit_report:
+                summary = audit_report.get("summary", {})
+                audit_cols = st.columns(4)
+                audit_cols[0].metric(
+                    "Raw ledger P/L",
+                    _fmt_money(summary.get("raw_net_profit")),
+                )
+                audit_cols[1].metric(
+                    "Confirmed",
+                    summary.get("confirmed_count", 0),
+                )
+                audit_cols[2].metric(
+                    "Discrepant / unresolved",
+                    (
+                        f"{summary.get('discrepant_count', 0)} / "
+                        f"{summary.get('unresolved_count', 0)}"
+                    ),
+                )
+                audit_cols[3].metric(
+                    "Estimated SIP-path P/L",
+                    _fmt_money(
+                        summary.get("estimated_sip_path_net_profit")
+                    ),
+                    help=(
+                        "Includes confirmed raw outcomes plus price-only "
+                        "reconstructions. Unresolved rows are excluded."
+                    ),
+                )
+                st.caption(
+                    "Generated "
+                    f"{audit_report.get('generated_at', '—')}; resolved estimate "
+                    f"covers {summary.get('estimated_trade_count', 0)} of "
+                    f"{summary.get('ledger_trade_count', 0)} closed trades. "
+                    "Price-only reconstructions do not model VWAP, EMA, or "
+                    "breakout-close exits."
+                )
+                audit_rows = execution_audit_table_rows(audit_report)
+                if audit_rows:
+                    st.dataframe(
+                        pd.DataFrame(audit_rows),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                st.download_button(
+                    "Download SIP audit JSON",
+                    data=json.dumps(audit_report, indent=2) + "\n",
+                    file_name="shadow_execution_audit.json",
+                    mime="application/json",
+                    use_container_width=True,
+                )
+            elif audit_disabled and shadow_pid is not None:
+                st.info(
+                    "Stop or finish the active shadow session before running "
+                    "the post-session audit."
+                )
+            else:
+                st.caption(
+                    "No saved SIP audit yet. Run one after a completed session."
+                )
         if settings.paper_order_submission_enabled:
             st.warning(
                 "Shadow mode is blocked while paper-order submission is armed."

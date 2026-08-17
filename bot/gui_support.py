@@ -195,6 +195,45 @@ def active_shadow_protection_rows(settings: Settings) -> list[dict[str, str]]:
     ]
 
 
+def execution_audit_table_rows(report: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Flatten the persisted SIP audit into a readable dashboard table."""
+
+    rows = report.get("rows", [])
+    if not isinstance(rows, list):
+        return []
+    values: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        reconstruction = row.get("reconstruction")
+        if not isinstance(reconstruction, Mapping):
+            reconstruction = {}
+        values.append(
+            {
+                "symbol": row.get("symbol"),
+                "entry time": row.get("entry_time"),
+                "status": row.get("status"),
+                "raw P/L": _float_or_none(row.get("raw_pnl")),
+                "SIP entry ask": _float_or_none(row.get("sip_entry_ask")),
+                "SIP exit bid": _float_or_none(row.get("sip_exit_bid")),
+                "estimated SIP-path P/L": _float_or_none(
+                    reconstruction.get("realized_pnl")
+                ),
+                "estimated outcome": reconstruction.get("reason") or "—",
+                "explanation": row.get("explanation") or "—",
+            }
+        )
+    status_order = {"discrepant": 0, "unresolved": 1, "confirmed": 2}
+    return sorted(
+        values,
+        key=lambda row: (
+            status_order.get(str(row.get("status")), 3),
+            str(row.get("entry time", "")),
+        ),
+        reverse=False,
+    )
+
+
 def _money(value: Decimal) -> str:
     return f"${value:,.2f}"
 
@@ -207,6 +246,15 @@ def _timezone_label(value: str) -> str:
     if value == "America/New_York":
         return "ET"
     return value
+
+
+def _float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def trade_table_rows(trades: Iterable[Any]) -> list[dict[str, Any]]:
