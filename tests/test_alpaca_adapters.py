@@ -153,6 +153,33 @@ class AlpacaMarketDataTests(unittest.TestCase):
 
         self.assertEqual(self.data._session_volume(bars, now), 100)
 
+    def test_latest_quote_retains_available_market_context(self):
+        now = datetime(2026, 7, 28, 8, 0, tzinfo=self.zone)
+        value = SimpleNamespace(
+            timestamp=now,
+            bid_price=Decimal("4.99"),
+            ask_price=Decimal("5.01"),
+            bid_size=120,
+            ask_size=80,
+            bid_exchange=SimpleNamespace(value="V"),
+            ask_exchange=SimpleNamespace(value="V"),
+            conditions=[SimpleNamespace(value="R")],
+            tape=SimpleNamespace(value="C"),
+        )
+        self.data.stock = SimpleNamespace(
+            get_stock_latest_quote=lambda request: {"TEST": value}
+        )
+        self.data._feed = lambda: "iex"
+
+        quote = self.data.get_latest_quote("TEST")
+
+        self.assertEqual(quote.bid_size, 120)
+        self.assertEqual(quote.ask_size, 80)
+        self.assertEqual(quote.bid_exchange, "V")
+        self.assertEqual(quote.ask_exchange, "V")
+        self.assertEqual(quote.conditions, ("R",))
+        self.assertEqual(quote.tape, "C")
+
 
 if __name__ == "__main__":
     unittest.main()

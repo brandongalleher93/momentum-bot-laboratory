@@ -518,6 +518,35 @@ class AlpacaMarketData:
             timestamp=value.timestamp,
             bid=_decimal(value.bid_price),
             ask=_decimal(value.ask_price),
+            bid_size=(
+                int(value.bid_size)
+                if getattr(value, "bid_size", None) is not None
+                else None
+            ),
+            ask_size=(
+                int(value.ask_size)
+                if getattr(value, "ask_size", None) is not None
+                else None
+            ),
+            bid_exchange=(
+                _enum_value(value.bid_exchange)
+                if getattr(value, "bid_exchange", None) is not None
+                else None
+            ),
+            ask_exchange=(
+                _enum_value(value.ask_exchange)
+                if getattr(value, "ask_exchange", None) is not None
+                else None
+            ),
+            conditions=tuple(
+                _enum_value(condition)
+                for condition in (getattr(value, "conditions", None) or ())
+            ),
+            tape=(
+                _enum_value(value.tape)
+                if getattr(value, "tape", None) is not None
+                else None
+            ),
         )
 
     def get_completed_ten_second_bars(

@@ -388,6 +388,70 @@ class ShadowPaperTests(unittest.TestCase):
                 result["scanner_skipped_reason"],
                 "Open-position monitoring has priority.",
             )
+            observations = [
+                event
+                for event in read_events(engine.events.path)
+                if event["event"] == "shadow_position_quote"
+            ]
+            self.assertEqual(len(observations), 1)
+            self.assertFalse(observations[0]["spread_anomaly"])
+            self.assertTrue(observations[0]["quote_current_for_exit"])
+            self.assertFalse(observations[0]["stop_crossed"])
+
+    def test_position_quote_records_abnormal_spread_and_risk_context(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = self.settings(directory)
+            store = ShadowTradeStore(
+                Path(directory) / "shadow.sqlite3"
+            )
+            store.record_entry(
+                make_trade(self.now - timedelta(minutes=1))
+            )
+            quote = Quote(
+                "TEST",
+                self.now,
+                Decimal("4.85"),
+                Decimal("5.02"),
+                bid_size=3,
+                ask_size=40,
+                bid_exchange="V",
+                ask_exchange="V",
+                conditions=("R",),
+                tape="C",
+            )
+            engine = ShadowPaperEngine(
+                settings,
+                FakeShadowMarketData(self.now, quote=quote),
+                store=store,
+            )
+
+            result = engine.run_once(self.now)
+
+            self.assertEqual(result["exits"], 1)
+            events = read_events(engine.events.path)
+            observation = next(
+                event
+                for event in events
+                if event["event"] == "shadow_position_quote"
+            )
+            self.assertLess(
+                events.index(observation),
+                next(
+                    index
+                    for index, event in enumerate(events)
+                    if event["event"] == "shadow_exit"
+                ),
+            )
+            self.assertTrue(observation["spread_anomaly"])
+            self.assertTrue(observation["stop_crossed"])
+            self.assertEqual(observation["bid_size"], 3)
+            self.assertEqual(observation["ask_size"], 40)
+            self.assertEqual(observation["bid_exchange"], "V")
+            self.assertEqual(observation["conditions"], ["R"])
+            self.assertEqual(observation["risk_overrun_at_bid"], "0.50")
+            self.assertEqual(
+                observation["stop_slippage_total_at_bid"], "0.50"
+            )
 
     def test_exit_requires_quote_newer_than_entry(self):
         with tempfile.TemporaryDirectory() as directory:

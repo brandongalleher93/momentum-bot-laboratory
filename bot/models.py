@@ -80,12 +80,22 @@ class Quote:
     timestamp: datetime
     bid: Decimal
     ask: Decimal
+    bid_size: int | None = None
+    ask_size: int | None = None
+    bid_exchange: str | None = None
+    ask_exchange: str | None = None
+    conditions: tuple[str, ...] = ()
+    tape: str | None = None
 
     def __post_init__(self) -> None:
         if self.timestamp.tzinfo is None:
             raise ValueError("Quote timestamps must be timezone-aware.")
         if self.bid <= ZERO or self.ask <= ZERO or self.ask < self.bid:
             raise ValueError("Quote must have positive bid <= ask.")
+        if self.bid_size is not None and self.bid_size < 0:
+            raise ValueError("Quote bid size cannot be negative.")
+        if self.ask_size is not None and self.ask_size < 0:
+            raise ValueError("Quote ask size cannot be negative.")
 
     @property
     def midpoint(self) -> Decimal:
