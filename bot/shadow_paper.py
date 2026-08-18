@@ -642,9 +642,14 @@ class ShadowPaperEngine:
                         "quote_age_seconds": self._quote_age_seconds(
                             quote, now
                         ),
-                        "bid": quote.bid,
-                        "ask": quote.ask,
-                        "spread_percent": quote.spread_percent,
+                        **self._quote_market_context(quote),
+                        "spread_anomaly": (
+                            quote.spread_percent
+                            > self.settings.max_spread_percent
+                        ),
+                        "entry_spread_limit_percent": (
+                            self.settings.max_spread_percent
+                        ),
                         "bid_above_stop": quote.bid - plan.stop_price,
                         "planned_risk": trade.initial_risk,
                     },
@@ -665,6 +670,7 @@ class ShadowPaperEngine:
             )
             if quote is None:
                 continue
+            self._record_position_quote(trade, quote, now)
             if quote.timestamp <= trade.entry_time:
                 self.events.append(
                     {
@@ -749,8 +755,14 @@ class ShadowPaperEngine:
                         "quote_age_seconds": self._quote_age_seconds(
                             quote, now
                         ),
-                        "bid": quote.bid,
-                        "ask": quote.ask,
+                        **self._quote_market_context(quote),
+                        "spread_anomaly": (
+                            quote.spread_percent
+                            > self.settings.max_spread_percent
+                        ),
+                        "entry_spread_limit_percent": (
+                            self.settings.max_spread_percent
+                        ),
                         "planned_risk": trade.initial_risk,
                         "realized_loss": realized_loss,
                         "risk_overrun": max(
@@ -769,6 +781,74 @@ class ShadowPaperEngine:
             )
             closed_count += 1
         return closed_count
+
+    def _record_position_quote(
+        self,
+        trade: ShadowTrade,
+        quote: Quote,
+        now: datetime,
+    ) -> None:
+        observed_bid_loss = max(
+            (trade.entry_price - quote.bid) * Decimal(trade.quantity),
+            Decimal("0"),
+        )
+        stop_slippage_total_at_bid = (
+            max(trade.stop_price - quote.bid, Decimal("0"))
+            * Decimal(trade.quantity)
+        )
+        self.events.append(
+            {
+                "event": "shadow_position_quote",
+                "trade_id": trade.trade_id,
+                "symbol": trade.symbol,
+                "cycle_timestamp": now,
+                "quote_timestamp": quote.timestamp,
+                "quote_age_seconds": self._quote_age_seconds(quote, now),
+                **self._quote_market_context(quote),
+                "entry_price": trade.entry_price,
+                "quantity": trade.quantity,
+                "stop_price": trade.stop_price,
+                "target_price": trade.target_price,
+                "bid_above_stop": quote.bid - trade.stop_price,
+                "stop_crossed": quote.bid <= trade.stop_price,
+                "target_reached": quote.bid >= trade.target_price,
+                "quote_newer_than_entry": quote.timestamp > trade.entry_time,
+                "quote_current_for_exit": self._quote_is_current(
+                    quote,
+                    now,
+                    max_age_seconds=self.EXIT_QUOTE_MAX_AGE_SECONDS,
+                ),
+                "entry_spread_limit_percent": (
+                    self.settings.max_spread_percent
+                ),
+                "spread_anomaly": (
+                    quote.spread_percent > self.settings.max_spread_percent
+                ),
+                "planned_risk": trade.initial_risk,
+                "observed_bid_loss": observed_bid_loss,
+                "risk_overrun_at_bid": max(
+                    observed_bid_loss - trade.initial_risk,
+                    Decimal("0"),
+                ),
+                "stop_slippage_total_at_bid": (
+                    stop_slippage_total_at_bid
+                ),
+            }
+        )
+
+    @staticmethod
+    def _quote_market_context(quote: Quote) -> dict:
+        return {
+            "bid": quote.bid,
+            "ask": quote.ask,
+            "bid_size": quote.bid_size,
+            "ask_size": quote.ask_size,
+            "bid_exchange": quote.bid_exchange,
+            "ask_exchange": quote.ask_exchange,
+            "conditions": quote.conditions,
+            "tape": quote.tape,
+            "spread_percent": quote.spread_percent,
+        }
 
     def _latest_session_bars(
         self, bars: Sequence[Bar], now: datetime

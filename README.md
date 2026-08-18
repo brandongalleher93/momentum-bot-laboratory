@@ -317,6 +317,16 @@ priority and slow universe refreshes are skipped. Exit events retain observed
 stop slippage, realized loss, planned risk, and any risk overrun rather than
 assuming an unrealistically perfect stop fill.
 
+Every successfully fetched quote for an open shadow position also appends a
+`shadow_position_quote` event. This quote trail records freshness, whether the
+quote advanced beyond entry, bid/ask prices and sizes, exchange/condition/tape
+context when the provider supplies it, the current spread, stop/target state,
+and the risk overrun implied by the observed bid. A spread above the configured
+entry spread limit is tagged as an anomaly for later analysis. The tag is
+observability only: it does not delay an exit, require confirmation, or change
+the conservative fill price. To avoid slowing protective-stop monitoring, the
+exit path does not make a second request for latest-trade data.
+
 The current account has IEX real-time access, not SIP real-time access. Shadow
 results therefore test forward behavior and execution plumbing; they are not
 directly comparable to SIP historical replay performance.
