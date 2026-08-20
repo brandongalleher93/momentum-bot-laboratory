@@ -5,6 +5,7 @@ Run with: streamlit run bot/gui.py
 
 from __future__ import annotations
 
+import base64
 import csv
 import io
 import json
@@ -79,6 +80,11 @@ INDEPENDENT_VALIDATION_MANIFESTS = {
         PROJECT_ROOT / "data" / "independent_momentum_validation_2.csv"
     ),
 }
+BRAND_ASSET_DIR = PROJECT_ROOT / "Logo and Branding" / "momentum-bot-branding"
+BRAND_APP_ICON = BRAND_ASSET_DIR / "logo" / "momentum-bot-app-icon.png"
+BRAND_HORIZONTAL_LOGO = (
+    BRAND_ASSET_DIR / "logo" / "momentum-bot-horizontal-dark.png"
+)
 
 HISTORICAL_REPLAY_PROFILES = {
     "Strict baseline": {},
@@ -170,6 +176,15 @@ def _fmt_pct(value: Any) -> str:
         return "—"
 
 
+def _image_data_uri(path: Path) -> str | None:
+    """Return a local PNG as a browser-safe data URI, if it is available."""
+    try:
+        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    except OSError:
+        return None
+    return f"data:image/png;base64,{encoded}"
+
+
 def _init_state(st) -> None:
     if "gui_settings" not in st.session_state:
         st.session_state.gui_settings = load_settings()
@@ -203,73 +218,232 @@ def _init_state(st) -> None:
 
 
 def _style(st) -> None:
-    st.set_page_config(page_title="Momentum Bot Laboratory", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
+    page_icon = str(BRAND_APP_ICON) if BRAND_APP_ICON.is_file() else "📈"
+    st.set_page_config(
+        page_title="Momentum Bot Laboratory",
+        page_icon=page_icon,
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
     st.markdown("""
     <style>
-    :root { --navy:#12263a; --blue:#1f6f8b; --teal:#2a9d8f; --amber:#e9c46a; --red:#c8553d; }
-    .stApp { background: #f6f8fb; }
-    [data-testid="stSidebar"] { background: #12263a; }
-    [data-testid="stSidebar"] * { color: #f7fafc; }
-    .hero {padding:.35rem 0 .8rem 0}.hero h1{font-size:2rem;margin:0;color:#12263a}.hero p{margin:.2rem 0;color:#52606d}
+    .stApp {
+      --mb-green:#00E676;
+      --mb-teal:#00C2A8;
+      --mb-white:#F4F7FA;
+      --mb-slate:#94A3B8;
+      --mb-navy:#0A1320;
+      --app-bg:light-dark(#f4f7fa, var(--mb-navy));
+      --sidebar-bg:light-dark(#e8eef3, #07101c);
+      --sidebar-text:light-dark(var(--mb-navy), var(--mb-white));
+      --surface:light-dark(#ffffff, #111c2c);
+      --surface-raised:light-dark(#edf3f6, #142235);
+      --border:light-dark(#cbd5e1, #2a3b50);
+      --border-soft:light-dark(#dbe3ea, #1c2b3d);
+      --text:light-dark(var(--mb-navy), var(--mb-white));
+      --text-muted:light-dark(#526174, var(--mb-slate));
+      --positive:light-dark(#087d48, var(--mb-green));
+      --interactive:light-dark(#007c70, var(--mb-teal));
+      --safety-bg:light-dark(#e4f7ed, #0b3024);
+      --safety-text:light-dark(#155b3b, #d9ffea);
+      --warning-bg:light-dark(#fff0ed, #3a1d1b);
+      --warning-text:light-dark(#7d2e20, #ffd9d5);
+      --amber:#e9c46a;
+      --red:light-dark(#a43d2a, #ff7b72);
+      background:var(--app-bg);
+      color:var(--text);
+      font-family:Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    [data-testid="stSidebar"] { background:var(--sidebar-bg); }
+    [data-testid="stSidebar"] * { color:var(--sidebar-text); }
+    a {color:var(--interactive)}
+    div.stButton > button:focus-visible,
+    div[data-testid="stDownloadButton"] > button:focus-visible {
+      outline:3px solid color-mix(in srgb, var(--interactive) 45%, transparent);
+      outline-offset:2px;
+    }
+    .brand-hero {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:1.25rem;
+      min-width:0;
+      overflow:hidden;
+      padding:.65rem clamp(.75rem, 2vw, 1.25rem);
+      margin:.15rem 0 .8rem;
+      background:linear-gradient(135deg, #0a1320 0%, #0d1f2f 100%);
+      border:1px solid color-mix(in srgb, var(--mb-teal) 36%, #25374a);
+      border-left:3px solid var(--mb-green);
+      border-radius:.65rem;
+    }
+    .brand-lockup {
+      width:min(100%, 34rem);
+      min-width:0;
+      overflow:hidden;
+      aspect-ratio:725 / 196;
+    }
+    .brand-lockup img {
+      display:block;
+      width:100%;
+      max-width:none;
+      transform:translateY(-5.5%);
+    }
+    .brand-hero-copy {
+      flex:0 1 16rem;
+      color:var(--mb-slate);
+      font-size:.72rem;
+      font-weight:600;
+      letter-spacing:.16em;
+      line-height:1.55;
+      text-align:right;
+      text-transform:uppercase;
+    }
+    .brand-hero-copy strong {color:var(--mb-green);font-weight:700}
+    .brand-fallback-title {
+      color:var(--mb-white);
+      font-size:clamp(1.45rem, 4vw, 2.2rem);
+      font-weight:700;
+      margin:0;
+    }
+    .sidebar-brand {
+      display:flex;
+      align-items:center;
+      gap:.65rem;
+      margin:.1rem 0 .8rem;
+    }
+    .sidebar-brand-mark {
+      flex:0 0 3.25rem;
+      width:3.25rem;
+      height:3.25rem;
+      overflow:hidden;
+      border-radius:.8rem;
+    }
+    .sidebar-brand-mark img {
+      display:block;
+      width:114%;
+      max-width:none;
+      transform:translate(-7%, -7%);
+    }
+    .sidebar-brand-name {
+      color:var(--sidebar-text);
+      font-size:1rem;
+      font-weight:700;
+      letter-spacing:.01em;
+      line-height:1.1;
+    }
+    .sidebar-brand-name span {color:var(--positive)}
+    .sidebar-brand-subtitle {
+      color:var(--text-muted);
+      font-size:.62rem;
+      font-weight:600;
+      letter-spacing:.16em;
+      margin-top:.25rem;
+      text-transform:uppercase;
+    }
     .status-strip {
       display:grid;
-      grid-template-columns:.9fr 1fr 1fr 1fr .9fr 1fr 2fr;
-      background:#fff;
-      border:1px solid #dce3ea;
+      grid-template-columns:repeat(auto-fit, minmax(min(8rem, 100%), 1fr));
+      gap:1px;
+      background:var(--border-soft);
+      border:1px solid var(--border);
       border-radius:.5rem;
-      box-shadow:0 1px 2px rgba(18,38,58,.04);
+      box-shadow:0 1px 3px rgba(0,0,0,.24);
       margin:.15rem 0 .4rem;
       overflow:hidden;
     }
     .status-item {
       min-width:0;
+      background:var(--surface);
       padding:.42rem .65rem .45rem;
-      border-right:1px solid #e7ecf1;
     }
-    .status-item:last-child {border-right:0}
     .status-label {
-      color:#627386;
+      color:var(--text-muted);
       font-size:.63rem;
       font-weight:700;
       letter-spacing:.06em;
       line-height:1.1;
       text-transform:uppercase;
-      white-space:nowrap;
+      overflow-wrap:anywhere;
     }
     .status-value {
-      color:#12263a;
+      color:var(--text);
       font-size:.88rem;
       font-weight:700;
       line-height:1.25;
       margin-top:.16rem;
-      overflow:hidden;
-      text-overflow:ellipsis;
-      white-space:nowrap;
+      overflow-wrap:anywhere;
     }
     .status-item:last-child .status-value {
       font-size:.72rem;
-      overflow-wrap:anywhere;
-      white-space:normal;
     }
-    .status-danger {color:#a43d2a}
+    .status-danger {color:var(--red)}
     .safety {
-      border-left:4px solid #2a9d8f;
-      background:#e8f5f2;
+      border-left:4px solid var(--positive);
+      background:var(--safety-bg);
+      color:var(--safety-text);
       padding:.38rem .7rem;
       border-radius:.3rem;
       font-size:.8rem;
       line-height:1.35;
       margin:0 0 .8rem;
     }
-    .warning {border-left-color:#c8553d;background:#fff0ed}
-    div[data-testid="stMetric"] {background:#fff;border:1px solid #dce3ea;padding:.7rem;border-radius:.55rem;box-shadow:0 1px 2px rgba(18,38,58,.04)}
-    div[data-testid="stDataFrame"] {border:1px solid #dce3ea;border-radius:.4rem}
-    .smallcaps {font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:#627386;font-weight:700}
-    @media (max-width: 900px) {
-      .status-strip {grid-template-columns:repeat(4, minmax(0, 1fr))}
-      .status-item {border-bottom:1px solid #e7ecf1}
-      .status-item:nth-child(4) {border-right:0}
-      .status-item:last-child {grid-column:span 2}
+    .warning {border-left-color:var(--red);background:var(--warning-bg);color:var(--warning-text)}
+    div[data-testid="stDataFrame"] {border:1px solid var(--border);border-radius:.4rem}
+    .smallcaps {font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);font-weight:700}
+    .metric-grid {
+      display:grid;
+      grid-template-columns:repeat(auto-fit, minmax(min(9rem, 100%), 1fr));
+      gap:.75rem;
+      margin:.5rem 0 .75rem;
+    }
+    .metric-card {
+      min-width:0;
+      background:var(--surface-raised);
+      border:1px solid var(--border);
+      border-radius:.55rem;
+      box-shadow:0 1px 3px rgba(0,0,0,.24);
+      padding:.75rem .85rem;
+    }
+    .metric-card-label {
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:.35rem;
+      min-height:2.4em;
+      color:var(--text-muted);
+      font-size:.75rem;
+      font-weight:650;
+      line-height:1.2;
+      overflow-wrap:anywhere;
+    }
+    .metric-card-label > span:first-child {min-width:0}
+    .metric-card-help {
+      display:inline-grid;
+      place-items:center;
+      flex:0 0 auto;
+      width:1rem;
+      height:1rem;
+      border:1px solid var(--text-muted);
+      border-radius:50%;
+      cursor:help;
+      font-size:.67rem;
+      line-height:1;
+    }
+    .metric-card-value {
+      color:var(--text);
+      font-size:clamp(1.3rem, 2vw, 1.7rem);
+      font-variant-numeric:tabular-nums;
+      font-weight:650;
+      letter-spacing:-.02em;
+      line-height:1.15;
+      margin-top:.4rem;
+      overflow-wrap:anywhere;
+    }
+    @media (max-width: 520px) {
+      .brand-hero {align-items:flex-start;flex-direction:column;gap:.15rem}
+      .brand-lockup {width:100%}
+      .brand-hero-copy {flex:auto;text-align:left}
+      .metric-card-label {min-height:0}
     }
     </style>""", unsafe_allow_html=True)
 
@@ -324,14 +498,81 @@ def _status_header(st, settings: Settings) -> None:
     )
 
 
+def _metric_cards(st, items, aria_label: str) -> None:
+    cards = []
+    for label, value, help_text in items:
+        help_html = (
+            '<span class="metric-card-help" '
+            f'title="{escape(help_text)}" '
+            f'aria-label="{escape(help_text)}">?</span>'
+            if help_text
+            else ""
+        )
+        cards.append(
+            '<div class="metric-card">'
+            '<div class="metric-card-label">'
+            f"<span>{escape(label)}</span>{help_html}"
+            "</div>"
+            f'<div class="metric-card-value">{escape(str(value))}</div>'
+            "</div>"
+        )
+    st.markdown(
+        '<div class="metric-grid" role="group" '
+        f'aria-label="{escape(aria_label)}">'
+        + "".join(cards)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _brand_hero(st) -> None:
+    logo_data = _image_data_uri(BRAND_HORIZONTAL_LOGO)
+    logo_html = (
+        '<div class="brand-lockup">'
+        f'<img src="{logo_data}" alt="Momentum Bot Laboratory">'
+        "</div>"
+        if logo_data
+        else '<h1 class="brand-fallback-title">Momentum Bot Laboratory</h1>'
+    )
+    st.markdown(
+        '<div class="brand-hero">'
+        f"{logo_html}"
+        '<div class="brand-hero-copy">Built for the <strong>setups</strong> '
+        "that matter</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def _sidebar(st) -> str:
-    st.sidebar.markdown("## Momentum Lab")
-    st.sidebar.caption("Observe · Understand · Tune · Measure")
+    icon_data = _image_data_uri(BRAND_APP_ICON)
+    icon_html = (
+        '<div class="sidebar-brand-mark">'
+        f'<img src="{icon_data}" alt="">'
+        "</div>"
+        if icon_data
+        else ""
+    )
+    st.sidebar.markdown(
+        '<div class="sidebar-brand">'
+        f"{icon_html}"
+        '<div><div class="sidebar-brand-name">Momentum <span>Bot</span></div>'
+        '<div class="sidebar-brand-subtitle">Laboratory</div></div>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    st.sidebar.caption("Observe · Understand · Tune · Trade")
     page = st.sidebar.radio("Workspace", ["Dashboard", "Backtest Lab", "Historical Data", "Scanner & Reasoning", "Trades", "Configuration", "Logs"], label_visibility="collapsed")
     st.sidebar.divider()
     st.sidebar.markdown("**North Star**")
     st.sidebar.caption("Every trade—or rejected trade—should be explainable within 30 seconds.")
     st.sidebar.caption("MVP · Paper trading only")
+    st.sidebar.divider()
+    st.sidebar.markdown("**Appearance**")
+    st.sidebar.caption(
+        "Choose Light or Dark from the top-right ⋮ menu → Settings → "
+        "Appearance."
+    )
     return page
 
 
@@ -369,11 +610,16 @@ def _dashboard(st, pd, settings: Settings) -> None:
         result = st.session_state.backtest_result
         if result:
             metrics = calculate_metrics(result.trades)
-            a,b,c,d = st.columns(4)
-            a.metric("Symbol", result.symbol)
-            b.metric("Trades", metrics["total_trades"])
-            c.metric("Win rate", _fmt_pct(metrics["win_rate"]))
-            d.metric("Net P/L", _fmt_money(metrics["net_profit"]))
+            _metric_cards(
+                st,
+                [
+                    ("Symbol", result.symbol, None),
+                    ("Trades", metrics["total_trades"], None),
+                    ("Win rate", _fmt_pct(metrics["win_rate"]), None),
+                    ("Net P/L", _fmt_money(metrics["net_profit"]), None),
+                ],
+                "Current experiment summary",
+            )
             st.info(f"Latest source: {st.session_state.backtest_source} · {result.entry_opportunities} entry opportunities · {result.setup_rejections} setup rejections")
         else:
             st.info("No backtest has been run in this session. Open Backtest Lab and run the included sample or upload a CSV.")
@@ -389,7 +635,11 @@ def _dashboard(st, pd, settings: Settings) -> None:
         account = st.session_state.account
         if account:
             st.success(f"{account.get('status', 'Connected')} · checked {account.get('checked_at', '')}")
-            st.metric("Cash", _fmt_money(account.get("cash")))
+            _metric_cards(
+                st,
+                [("Cash", _fmt_money(account.get("cash")), None)],
+                "Paper account summary",
+            )
         else:
             st.caption("Connection is checked only when you request it. The GUI never places an order during this check.")
         _account_check(st, settings)
@@ -442,16 +692,22 @@ def _dashboard(st, pd, settings: Settings) -> None:
         )
         shadow_pid = shadow_runner.active_pid()
         automatic_shadow_schedule = launch_agent_is_configured()
-        shadow_cols = st.columns(3)
-        shadow_cols[0].metric(
-            "Open shadow trades", shadow_summary["open_trades"]
-        )
-        shadow_cols[1].metric(
-            "Closed shadow trades", shadow_summary["closed_trades"]
-        )
-        shadow_cols[2].metric(
-            "Shadow net P/L",
-            _fmt_money(shadow_summary["net_profit"]),
+        _metric_cards(
+            st,
+            [
+                ("Open shadow trades", shadow_summary["open_trades"], None),
+                (
+                    "Closed shadow trades",
+                    shadow_summary["closed_trades"],
+                    None,
+                ),
+                (
+                    "Shadow net P/L",
+                    _fmt_money(shadow_summary["net_profit"]),
+                    None,
+                ),
+            ],
+            "Shadow trade summary",
         )
         shadow_trades = list(reversed(shadow_store.all_trades()))[:10]
         if shadow_trades:
@@ -541,31 +797,40 @@ def _dashboard(st, pd, settings: Settings) -> None:
             audit_report = load_execution_audit(SHADOW_EXECUTION_AUDIT)
             if audit_report:
                 summary = audit_report.get("summary", {})
-                audit_cols = st.columns(4)
-                audit_cols[0].metric(
-                    "Raw ledger P/L",
-                    _fmt_money(summary.get("raw_net_profit")),
-                )
-                audit_cols[1].metric(
-                    "Confirmed",
-                    summary.get("confirmed_count", 0),
-                )
-                audit_cols[2].metric(
-                    "Discrepant / unresolved",
-                    (
-                        f"{summary.get('discrepant_count', 0)} / "
-                        f"{summary.get('unresolved_count', 0)}"
-                    ),
-                )
-                audit_cols[3].metric(
-                    "Estimated SIP-path P/L",
-                    _fmt_money(
-                        summary.get("estimated_sip_path_net_profit")
-                    ),
-                    help=(
-                        "Includes confirmed raw outcomes plus price-only "
-                        "reconstructions. Unresolved rows are excluded."
-                    ),
+                _metric_cards(
+                    st,
+                    [
+                        (
+                            "Raw ledger P/L",
+                            _fmt_money(summary.get("raw_net_profit")),
+                            None,
+                        ),
+                        (
+                            "Confirmed",
+                            summary.get("confirmed_count", 0),
+                            None,
+                        ),
+                        (
+                            "Discrepant / unresolved",
+                            (
+                                f"{summary.get('discrepant_count', 0)} / "
+                                f"{summary.get('unresolved_count', 0)}"
+                            ),
+                            None,
+                        ),
+                        (
+                            "Estimated SIP-path P/L",
+                            _fmt_money(
+                                summary.get("estimated_sip_path_net_profit")
+                            ),
+                            (
+                                "Includes confirmed raw outcomes plus "
+                                "price-only reconstructions. Unresolved rows "
+                                "are excluded."
+                            ),
+                        ),
+                    ],
+                    "SIP execution audit summary",
                 )
                 st.caption(
                     "Generated "
@@ -693,9 +958,9 @@ def _chart(pd, go, make_subplots, bars, trades=()):
     for trade in trades:
         fig.add_trace(go.Scatter(x=[trade.entry_time], y=[float(trade.entry_price)], mode="markers", marker=dict(symbol="triangle-up", size=13, color="#1f6f8b"), name="Entry", text=[trade.trade_id]), row=1,col=1)
         fig.add_trace(go.Scatter(x=[trade.exit_time], y=[float(trade.exit_price)], mode="markers", marker=dict(symbol="triangle-down", size=13, color="#c8553d"), name="Exit", text=[trade.exit_reason]), row=1,col=1)
-    fig.update_layout(height=650, margin=dict(l=10,r=10,t=35,b=10), paper_bgcolor="white", plot_bgcolor="white", hovermode="x unified", xaxis_rangeslider_visible=False, legend_orientation="h", legend_y=1.03)
-    fig.update_xaxes(showgrid=True, gridcolor="#edf1f5")
-    fig.update_yaxes(showgrid=True, gridcolor="#edf1f5")
+    fig.update_layout(height=650, margin=dict(l=10,r=10,t=35,b=10), hovermode="x unified", xaxis_rangeslider_visible=False, legend_orientation="h", legend_y=1.03)
+    fig.update_xaxes(showgrid=True, gridcolor="rgba(128,128,128,.22)")
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,.22)")
     return fig
 
 
@@ -745,9 +1010,12 @@ def _backtest(st, pd, go, make_subplots, settings: Settings) -> None:
         st.info("Run a backtest to populate the chart, metrics, trades, and decision evidence.")
         return
     metrics = calculate_metrics(result.trades)
-    cols = st.columns(6)
     items = [("Net P/L",_fmt_money(metrics["net_profit"])),("Trades",metrics["total_trades"]),("Win rate",_fmt_pct(metrics["win_rate"])),("Profit factor",f"{float(metrics['profit_factor']):.2f}" if metrics["profit_factor"] is not None else "—"),("Max drawdown",_fmt_money(metrics["max_drawdown"])),("Avg R",f"{float(metrics['average_r_multiple']):.2f}" if metrics["average_r_multiple"] is not None else "—")]
-    for col,(label,value) in zip(cols,items): col.metric(label,value)
+    _metric_cards(
+        st,
+        [(label, value, None) for label, value in items],
+        "Backtest performance summary",
+    )
     st.plotly_chart(_chart(pd,go,make_subplots,bars,result.trades), use_container_width=True, config={"displaylogo":False})
     tab1,tab2,tab3 = st.tabs(["Trades", "Run evidence", "Configuration snapshot"])
     with tab1:
@@ -780,10 +1048,19 @@ def _scanner(st, pd, go, make_subplots, settings: Settings) -> None:
         symbol = st.selectbox("Symbol", symbols)
         selected = [r for r in symbol_rows if r.get("symbol") == symbol]
         latest = selected[0]
-        a,b,c = st.columns(3)
-        a.metric("Current action", "PASS" if latest.get("passed") else "REJECT")
-        b.metric("Last module", str(latest.get("module","—")))
-        c.metric("Events", len(selected))
+        _metric_cards(
+            st,
+            [
+                (
+                    "Current action",
+                    "PASS" if latest.get("passed") else "REJECT",
+                    None,
+                ),
+                ("Last module", str(latest.get("module", "—")), None),
+                ("Events", len(selected), None),
+            ],
+            "Scanner decision summary",
+        )
         frame = pd.DataFrame([{"time":r.get("timestamp"),"check":r.get("module"),"state":"Passed" if r.get("passed") else "Failed", "reason":r.get("reason"),"observed":json.dumps(r.get("actual_values",{}), default=str),"expected":json.dumps(r.get("expected_values",{}), default=str)} for r in selected])
         st.dataframe(frame, use_container_width=True, hide_index=True)
     if st.session_state.backtest_bars:
@@ -877,9 +1154,17 @@ def _historical_data(st, pd, settings: Settings) -> None:
                 st.session_state.historical_guardrail_preset = manifest[
                     "guardrail_preset"
                 ]
-    cols = st.columns(5)
-    for col, (label, value) in zip(cols, [("Snapshots",summary["snapshots"]),("Captured",summary["captured"]),("Reconstructed",summary["reconstructed"]),("Bar files",summary["data_files"]),("Replay runs",summary["replay_runs"])]):
-        col.metric(label, value)
+    _metric_cards(
+        st,
+        [
+            ("Snapshots", summary["snapshots"], None),
+            ("Captured", summary["captured"], None),
+            ("Reconstructed", summary["reconstructed"], None),
+            ("Bar files", summary["data_files"], None),
+            ("Replay runs", summary["replay_runs"], None),
+        ],
+        "Historical data summary",
+    )
     st.info("Captured rows come from an actual scanner cycle. Reconstructed rows are approximations derived from historical bars and estimated spreads.")
     with st.expander(
         "Independent momentum validation batches", expanded=False
@@ -1746,7 +2031,20 @@ def _historical_data(st, pd, settings: Settings) -> None:
                 + st.session_state.portfolio_result_guardrail_preset
                 + ". These do not alter live or paper settings."
             )
-        a,b,c,d=st.columns(4); a.metric("Passing symbols",len(result.symbols)); b.metric("Scoped candidates",result.candidate_count); c.metric("Accepted trades",len(result.accepted_trades)); d.metric("Net P/L",_fmt_money(result.metrics.get("net_profit")))
+        _metric_cards(
+            st,
+            [
+                ("Passing symbols", len(result.symbols), None),
+                ("Scoped candidates", result.candidate_count, None),
+                ("Accepted trades", len(result.accepted_trades), None),
+                (
+                    "Net P/L",
+                    _fmt_money(result.metrics.get("net_profit")),
+                    None,
+                ),
+            ],
+            "Portfolio replay summary",
+        )
         tabs=st.tabs(["Accepted trades","Strategy diagnostics","Portfolio rejections","Notes"])
         with tabs[0]:
             if result.accepted_trades: st.dataframe(pd.DataFrame(trade_table_rows(result.accepted_trades)),use_container_width=True,hide_index=True)
@@ -1791,7 +2089,20 @@ def _trades(st, pd, settings: Settings) -> None:
             chosen = st.selectbox("Archived run", files, format_func=lambda p:p.stem)
             payload = json.loads(chosen.read_text(encoding="utf-8"))
             metrics = payload["result"]["metrics"]
-            a,b,c,d=st.columns(4); a.metric("Symbol",payload["result"]["symbol"]); b.metric("Trades",metrics["total_trades"]); c.metric("Net P/L",_fmt_money(metrics["net_profit"])); d.metric("Win rate",_fmt_pct(metrics["win_rate"]))
+            _metric_cards(
+                st,
+                [
+                    ("Symbol", payload["result"]["symbol"], None),
+                    ("Trades", metrics["total_trades"], None),
+                    (
+                        "Net P/L",
+                        _fmt_money(metrics["net_profit"]),
+                        None,
+                    ),
+                    ("Win rate", _fmt_pct(metrics["win_rate"]), None),
+                ],
+                "Archived backtest summary",
+            )
             st.dataframe(pd.DataFrame(payload["result"]["trades"]), use_container_width=True, hide_index=True)
     with tabs[2]:
         account = st.session_state.account
@@ -1890,7 +2201,7 @@ def render_app() -> None:
     st,pd,go,make_subplots=_imports()
     _style(st); _init_state(st)
     settings:Settings=st.session_state.gui_settings
-    st.markdown('<div class="hero"><h1>Momentum Bot Laboratory</h1><p>Observe, understand, tune, and measure the paper-trading MVP.</p></div>',unsafe_allow_html=True)
+    _brand_hero(st)
     _status_header(st,settings)
     page=_sidebar(st)
     if page=="Dashboard": _dashboard(st,pd,settings)
