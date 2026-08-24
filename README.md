@@ -1,6 +1,6 @@
-# Momentum Trading Bot MVP
+# Momentum Bot Laboratory
 
-Momentum Trading Bot is an educational Python application for studying a
+Momentum Bot Laboratory is an educational Python application for studying a
 momentum strategy with historical data, simulated fills, and Alpaca paper
 trading. It is under active development, does not claim profitability, and is
 not financial advice.
