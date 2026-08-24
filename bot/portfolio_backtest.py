@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Collection, Mapping, Sequence
@@ -343,7 +343,7 @@ class PortfolioReplayEngine:
         if timestamps:
             replay_config = self.settings.snapshot()
             replay_config["replay_guardrails"] = guardrails.snapshot()
-            self.store.record_replay({"run_id":run_id,"created_at":datetime.utcnow().isoformat()+"Z","source":source,"feed":feed,"start_time":min(timestamps).isoformat(),"end_time":max(timestamps).isoformat(),"symbol_count":len(result.symbols),"candidate_count":result.candidate_count,"trade_count":len(accepted),"config":replay_config,"metrics":metrics,"notes":notes})
+            self.store.record_replay({"run_id":run_id,"created_at":datetime.now(timezone.utc).isoformat(),"source":source,"feed":feed,"start_time":min(timestamps).isoformat(),"end_time":max(timestamps).isoformat(),"symbol_count":len(result.symbols),"candidate_count":result.candidate_count,"trade_count":len(accepted),"config":replay_config,"metrics":metrics,"notes":notes})
         return result
 
     @staticmethod

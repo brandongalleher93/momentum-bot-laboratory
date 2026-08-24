@@ -13,6 +13,7 @@ from typing import Iterable, Sequence
 from bot.config import Settings, validate_settings
 from bot.history_store import HistoryStore
 from bot.models import Bar
+from bot.security import ensure_private_directory, ensure_private_file
 
 
 @dataclass(frozen=True)
@@ -127,7 +128,7 @@ class BarCache:
     def __init__(self, root: Path, store: HistoryStore):
         self.root = root
         self.store = store
-        self.root.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(self.root)
 
     def path_for(self, symbol: str, start: datetime, end: datetime, feed: str) -> Path:
         safe = symbol.upper().replace("/", "-")
@@ -139,9 +140,10 @@ class BarCache:
         import pandas as pd
         start, end, symbol = bars[0].timestamp, bars[-1].timestamp, bars[0].symbol
         path = self.path_for(symbol, start, end, feed)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(path.parent)
         frame = pd.DataFrame([{"timestamp": b.timestamp, "symbol": b.symbol, "open": float(b.open), "high": float(b.high), "low": float(b.low), "close": float(b.close), "volume": b.volume} for b in bars])
         frame.to_parquet(path, index=False)
+        path.chmod(0o600)
         checksum = hashlib.sha256(path.read_bytes()).hexdigest()
         self.store.record_data_file(path=path, symbol=symbol, start_time=start.isoformat(), end_time=end.isoformat(), feed=feed, adjustment=adjustment, row_count=len(frame), created_at=datetime.now(timezone.utc).isoformat(), checksum=checksum)
         return path
@@ -183,7 +185,7 @@ class BarCache:
 class TradeCache:
     def __init__(self, root: Path):
         self.root = root
-        self.root.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(self.root)
 
     def path_for(self, symbol: str, start: datetime, end: datetime, feed: str) -> Path:
         safe = symbol.upper().replace("/", "-")
@@ -196,7 +198,7 @@ class TradeCache:
 
         start, end, symbol = trades[0].timestamp, trades[-1].timestamp, trades[0].symbol
         path = self.path_for(symbol, start, end, feed)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(path.parent)
         frame = pd.DataFrame(
             [
                 {
@@ -209,6 +211,7 @@ class TradeCache:
             ]
         )
         frame.to_parquet(path, index=False)
+        path.chmod(0o600)
         return path
 
     @staticmethod
@@ -306,10 +309,12 @@ def aggregate_trades_to_bars(
 
 
 def save_workspace_manifest(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(path.parent)
     temporary = path.with_suffix(path.suffix + ".tmp")
+    ensure_private_file(temporary)
     temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     temporary.replace(path)
+    path.chmod(0o600)
 
 
 def load_workspace_manifest(path: Path) -> dict:

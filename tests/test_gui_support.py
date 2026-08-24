@@ -10,6 +10,7 @@ from bot.config import Settings
 from bot.gui import historical_replay_settings
 from bot.gui_support import (
     active_shadow_protection_rows,
+    config_diff,
     execution_audit_table_rows,
     load_profile,
     profile_filename,
@@ -34,6 +35,12 @@ class GuiSupportTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             profile_filename("///")
 
+    def test_config_diff_redacts_external_paths(self) -> None:
+        external = Path("/") / "Users" / "example" / "private" / "logs"
+        rows = config_diff(Settings(), replace(Settings(), log_dir=external))
+
+        self.assertEqual(rows[0]["current"], "[EXTERNAL PATH REDACTED]")
+
     def test_jsonl_reader_keeps_valid_and_malformed_events(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "events.jsonl"
@@ -41,6 +48,20 @@ class GuiSupportTests(unittest.TestCase):
             rows = read_jsonl(path)
             self.assertEqual(rows[0]["event"], "ok")
             self.assertTrue(rows[1]["malformed"])
+
+    def test_jsonl_reader_redacts_old_sensitive_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.jsonl"
+            path.write_text(
+                json.dumps({"account_id": "old-account", "cash": "500"})
+                + "\n",
+                encoding="utf-8",
+            )
+
+            rows = read_jsonl(path)
+
+            self.assertEqual(rows[0]["account_id"], "[REDACTED]")
+            self.assertEqual(rows[0]["cash"], "[REDACTED]")
 
     def test_premarket_replay_profile_does_not_mutate_live_settings(self) -> None:
         original = Settings()

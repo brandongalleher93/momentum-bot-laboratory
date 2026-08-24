@@ -4,3 +4,9 @@ primaryColor = "#00C2A8"
 backgroundColor = "#0A1320"
 secondaryBackgroundColor = "#111E2D"
 textColor = "#F4F7FA"
+
+[server]
+address = "127.0.0.1"
+enableCORS = true
+enableXsrfProtection = true
+maxUploadSize = 25

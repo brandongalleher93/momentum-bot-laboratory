@@ -9,6 +9,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from bot.security import ensure_private_directory, ensure_private_file
+
 
 class ShadowRunner:
     def __init__(self, output_dir: Path, python: str, project_root: Path):
@@ -32,7 +34,8 @@ class ShadowRunner:
         active = self.active_pid()
         if active is not None:
             return active
-        self.directory.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(self.directory)
+        ensure_private_file(self.log_path)
         with self.log_path.open("a", encoding="utf-8") as log:
             process = subprocess.Popen(
                 [self.python, "-m", "bot", "shadow"],
@@ -43,6 +46,7 @@ class ShadowRunner:
                 start_new_session=True,
             )
         self.pid_path.write_text(f"{process.pid}\n", encoding="utf-8")
+        self.pid_path.chmod(0o600)
         return process.pid
 
     @contextmanager
@@ -55,8 +59,9 @@ class ShadowRunner:
             raise RuntimeError(
                 f"Shadow observation is already running with PID {active}."
             )
-        self.directory.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(self.directory)
         self.pid_path.write_text(f"{pid}\n", encoding="utf-8")
+        self.pid_path.chmod(0o600)
         try:
             yield pid
         finally:

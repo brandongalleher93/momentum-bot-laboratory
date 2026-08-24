@@ -2,6 +2,7 @@ import unittest
 from dataclasses import replace
 from datetime import time
 from decimal import Decimal
+from pathlib import Path
 
 from bot.config import Settings, load_settings, validate_settings
 
@@ -17,6 +18,20 @@ class ConfigTests(unittest.TestCase):
     def test_live_mode_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "ALPACA_PAPER"):
             validate_settings(replace(Settings(), alpaca_paper=False))
+
+        with self.assertRaisesRegex(ValueError, "ALLOW_LIVE_TRADING"):
+            validate_settings(replace(Settings(), allow_live_trading=True))
+
+    def test_account_details_are_hidden_by_default(self) -> None:
+        self.assertFalse(Settings().gui_show_account_details)
+
+    def test_snapshot_does_not_expose_external_absolute_paths(self) -> None:
+        private_path = Path("/") / "Users" / "example" / "private" / "logs"
+        value = replace(Settings(), log_dir=private_path)
+
+        self.assertEqual(
+            value.snapshot()["log_dir"], "[EXTERNAL PATH REDACTED]"
+        )
 
     def test_percentages_use_decimal_fractions(self) -> None:
         with self.assertRaisesRegex(ValueError, "MIN_PERCENT_GAIN"):

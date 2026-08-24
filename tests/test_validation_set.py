@@ -12,23 +12,20 @@ from bot.validation_set import (
 
 
 class ValidationSetTests(unittest.TestCase):
-    def test_built_in_manifests_are_unique_and_meet_basic_thresholds(self):
-        paths = [
-            PROJECT_ROOT / "data" / "independent_momentum_validation.csv",
-            PROJECT_ROOT / "data" / "independent_momentum_validation_2.csv",
-        ]
-        targets = [
-            target
-            for path in paths
-            for target in load_validation_targets(path)
-        ]
+    def test_bundled_example_manifest_is_synthetic_and_well_formed(self):
+        path = PROJECT_ROOT / "examples" / "validation_manifest.example.csv"
+        targets = load_validation_targets(path)
 
-        self.assertEqual(len(targets), 33)
+        self.assertEqual(len(targets), 2)
         self.assertEqual(
             len({(target.trade_date, target.symbol) for target in targets}),
-            33,
+            2,
         )
         for target in targets:
+            self.assertEqual(
+                target.source_url,
+                "https://example.invalid/synthetic-validation-row",
+            )
             self.assertGreaterEqual(target.observed_price, 2)
             self.assertLessEqual(target.observed_price, 20)
             self.assertGreaterEqual(target.premarket_gain_percent, 10)

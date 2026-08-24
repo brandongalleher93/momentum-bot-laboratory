@@ -12,7 +12,7 @@ from pathlib import Path
 from bot.config import PROJECT_ROOT
 
 
-LAUNCH_AGENT_LABEL = "local.brandon.tradingbot.shadow"
+LAUNCH_AGENT_LABEL = "app.momentumbot.shadow"
 LAUNCH_AGENT_FILENAME = f"{LAUNCH_AGENT_LABEL}.plist"
 AUTOMATIC_START_LOCAL_HOUR = 6
 AUTOMATIC_START_LOCAL_MINUTE = 0
@@ -56,7 +56,7 @@ def launch_agent_payload(
         "StandardOutPath": str(launch_log),
         "StandardErrorPath": str(launch_log),
         "Umask": 0o077,
-        "AssociatedBundleIdentifiers": ["local.brandon.tradingbot"],
+        "AssociatedBundleIdentifiers": ["app.momentumbot"],
     }
 
 

@@ -28,6 +28,7 @@ from bot.models import (
 )
 from bot.risk_manager import RiskManager
 from bot.scanner import MarketScanner
+from bot.security import ensure_private_file
 from bot.strategy import BullFlagStrategy, MicroPullbackStrategy
 
 
@@ -100,7 +101,7 @@ class ShadowTradeStore:
 
     def __init__(self, path: Path):
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_private_file(self.path)
         self.initialize()
 
     @contextmanager

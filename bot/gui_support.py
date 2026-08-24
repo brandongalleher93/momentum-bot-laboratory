@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import deque
 from dataclasses import fields, replace
 from datetime import time
 from decimal import Decimal
@@ -11,7 +12,8 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from bot.config import Settings, validate_settings
-from bot.event_log import to_json_safe
+from bot.event_log import redact_sensitive_fields, to_json_safe
+from bot.security import ensure_private_directory
 
 
 SAFE_PROFILE_NAME = re.compile(r"[^A-Za-z0-9._ -]+")
@@ -20,6 +22,7 @@ PROTECTED_FIELDS = {
     "alpaca_secret_key",
     "alpaca_paper",
     "allow_live_trading",
+    "gui_show_account_details",
     "log_dir",
     "output_dir",
 }
@@ -33,10 +36,11 @@ def profile_filename(name: str) -> str:
 
 
 def save_profile(directory: Path, name: str, settings: Settings) -> Path:
-    directory.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(directory)
     path = directory / profile_filename(name)
     payload = {"profile_name": name.strip(), "config": settings.snapshot()}
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.chmod(0o600)
     return path
 
 
@@ -84,7 +88,7 @@ def _coerce_optional(name: str, raw: Any) -> Any:
 def read_jsonl(path: Path, limit: int = 1000) -> list[dict[str, Any]]:
     if not path.exists():
         return []
-    rows: list[dict[str, Any]] = []
+    rows: deque[dict[str, Any]] = deque(maxlen=limit)
     with path.open("r", encoding="utf-8", errors="replace") as stream:
         for line_number, line in enumerate(stream, start=1):
             if not line.strip():
@@ -92,11 +96,21 @@ def read_jsonl(path: Path, limit: int = 1000) -> list[dict[str, Any]]:
             try:
                 value = json.loads(line)
                 if isinstance(value, dict):
+                    value = redact_sensitive_fields(value)
                     value["_line"] = line_number
                     rows.append(value)
             except json.JSONDecodeError:
-                rows.append({"_line": line_number, "severity": "error", "reason": line.rstrip(), "malformed": True})
-    return rows[-limit:]
+                rows.append(
+                    redact_sensitive_fields(
+                        {
+                            "_line": line_number,
+                            "severity": "error",
+                            "reason": line.rstrip(),
+                            "malformed": True,
+                        }
+                    )
+                )
+    return list(rows)
 
 
 def recent_decisions(log_dir: Path, limit: int = 500) -> list[dict[str, Any]]:
@@ -106,13 +120,21 @@ def recent_decisions(log_dir: Path, limit: int = 500) -> list[dict[str, Any]]:
 
 def config_diff(defaults: Settings, current: Settings) -> list[dict[str, Any]]:
     rows = []
+    default_snapshot = defaults.snapshot()
+    current_snapshot = current.snapshot()
     for field in fields(defaults):
         name = field.name
         if name in {"alpaca_api_key", "alpaca_secret_key"}:
             continue
         old, new = getattr(defaults, name), getattr(current, name)
         if old != new:
-            rows.append({"parameter": name, "default": to_json_safe(old), "current": to_json_safe(new)})
+            rows.append(
+                {
+                    "parameter": name,
+                    "default": default_snapshot[name],
+                    "current": current_snapshot[name],
+                }
+            )
     return rows
 
 

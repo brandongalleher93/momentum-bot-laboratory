@@ -77,9 +77,8 @@ class TradingBot:
                 "event": "run_started",
                 "timestamp": datetime.now(timezone.utc),
                 "config": self.settings.snapshot(),
-                "account_id": account.account_id,
-                "recovered_orders": [order.broker_order_id for order in orders],
-                "recovered_positions": [position.symbol for position in positions],
+                "recovered_order_count": len(orders),
+                "recovered_position_count": len(positions),
             }
         )
         if account.status.lower() != "active" or account.trading_blocked:
@@ -96,8 +95,8 @@ class TradingBot:
                 decision_time=event_time,
                 data_cutoff_time=event_time,
                 actual_values={
-                    "orders": [order.broker_order_id for order in orders],
-                    "positions": [position.symbol for position in positions],
+                    "open_order_count": len(orders),
+                    "open_position_count": len(positions),
                 },
             )
         else:

@@ -13,6 +13,7 @@ from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from bot.event_log import to_json_safe
 from bot.models import DiagnosticResult, MarketSnapshot
+from bot.security import ensure_private_file
 
 
 SCHEMA_VERSION = 1
@@ -39,7 +40,7 @@ class CandidateRecord:
 class HistoryStore:
     def __init__(self, path: Path):
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_private_file(self.path)
         self.initialize()
 
     @contextmanager

@@ -13,6 +13,7 @@ from bot.backtest import BacktestEngine, load_bars_csv, trade_rows
 from bot.config import PROJECT_ROOT, load_settings, validate_settings
 from bot.event_log import to_json_safe, write_csv
 from bot.review import build_backtest_report
+from bot.security import enforce_private_umask, ensure_private_file
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -59,6 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    enforce_private_umask()
     args = build_parser().parse_args(argv)
 
     if args.command == "shadow-schedule":
@@ -141,11 +143,9 @@ def main(argv: list[str] | None = None) -> int:
         account = broker.get_account()
         print("Connected to Alpaca paper trading.")
         print(f"Account status: {account.status}")
-        print(f"Equity: ${account.equity}")
-        print(f"Cash: ${account.cash}")
-        print(f"Buying power: ${account.buying_power}")
         print(f"Open orders: {len(broker.get_open_orders())}")
         print(f"Open positions: {len(broker.get_positions())}")
+        print("Account balances and position details are hidden by default.")
         print("No orders were placed.")
         return 0
 
@@ -196,11 +196,12 @@ def main(argv: list[str] | None = None) -> int:
         report = build_backtest_report(result)
         report_path = args.report or settings.output_dir / "backtest_summary.json"
         trades_path = args.trades or settings.output_dir / "trades.csv"
-        report_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_private_file(report_path)
         report_path.write_text(
             json.dumps(to_json_safe(report), indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        report_path.chmod(0o600)
         rows = trade_rows(result)
         fields = list(rows[0].keys()) if rows else [
             "trade_id",

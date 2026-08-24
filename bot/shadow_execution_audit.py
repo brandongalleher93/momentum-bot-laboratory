@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 from bot.config import Settings, validate_settings
 from bot.event_log import to_json_safe
 from bot.models import Quote
+from bot.security import ensure_private_file
 from bot.shadow_paper import ShadowTrade
 
 
@@ -424,7 +425,7 @@ class ShadowExecutionAuditor:
 
 
 def save_execution_audit(report: ExecutionAuditReport, path: Path) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_file(path)
     payload = {
         **asdict(report),
         "summary": report.summary(),
@@ -433,6 +434,7 @@ def save_execution_audit(report: ExecutionAuditReport, path: Path) -> Path:
         json.dumps(to_json_safe(payload), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    path.chmod(0o600)
     return path
 
 

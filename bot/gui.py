@@ -25,9 +25,13 @@ _PROJECT_DIRECTORY = Path(__file__).resolve().parent.parent
 if str(_PROJECT_DIRECTORY) not in sys.path:
     sys.path.insert(0, str(_PROJECT_DIRECTORY))
 
+from bot.security import enforce_private_umask, ensure_private_directory
+
+enforce_private_umask()
+
 from bot.backtest import BacktestEngine, load_bars_csv, load_bars_csv_stream
 from bot.config import PROJECT_ROOT, Settings, load_settings, validate_settings
-from bot.event_log import to_json_safe
+from bot.event_log import redact_sensitive_fields, to_json_safe
 from bot.gui_support import (
     PROTECTED_FIELDS,
     active_shadow_protection_rows,
@@ -72,19 +76,27 @@ SHADOW_EXECUTION_AUDIT = (
     PROJECT_ROOT / "output" / "shadow_paper" / "execution_audit.json"
 )
 HISTORICAL_WORKSPACE_MANIFEST = HISTORY_DIR / "active_workspace.json"
-INDEPENDENT_VALIDATION_MANIFESTS = {
-    "Set 1 — June and July 2026": (
-        PROJECT_ROOT / "data" / "independent_momentum_validation.csv"
-    ),
-    "Set 2 — May 2026": (
-        PROJECT_ROOT / "data" / "independent_momentum_validation_2.csv"
-    ),
-}
-BRAND_ASSET_DIR = PROJECT_ROOT / "Logo and Branding" / "momentum-bot-branding"
-BRAND_APP_ICON = BRAND_ASSET_DIR / "logo" / "momentum-bot-app-icon.png"
-BRAND_HORIZONTAL_LOGO = (
-    BRAND_ASSET_DIR / "logo" / "momentum-bot-horizontal-dark.png"
-)
+def _available_validation_manifests() -> dict[str, Path]:
+    manifests = {
+        "Bundled synthetic example": (
+            PROJECT_ROOT / "examples" / "validation_manifest.example.csv"
+        )
+    }
+    private_directory = PROJECT_ROOT / "private_data" / "research" / "data"
+    for path in sorted(private_directory.glob("*validation*.csv")):
+        label = "Local private — " + path.stem.replace("_", " ").title()
+        manifests[label] = path
+    return manifests
+
+
+VALIDATION_MANIFESTS = _available_validation_manifests()
+BRAND_ASSET_DIR = PROJECT_ROOT / "assets" / "branding"
+BRAND_APP_ICON = BRAND_ASSET_DIR / "momentum-bot-app-icon.png"
+BRAND_HORIZONTAL_LOGO = BRAND_ASSET_DIR / "momentum-bot-horizontal-dark.png"
+
+
+def _safe_error_text(error: Exception) -> str:
+    return str(redact_sensitive_fields(str(error)))
 
 HISTORICAL_REPLAY_PROFILES = {
     "Strict baseline": {},
@@ -205,7 +217,7 @@ def _init_state(st) -> None:
     st.session_state.setdefault("historical_validation_name", None)
     st.session_state.setdefault(
         "historical_validation_selection",
-        next(iter(INDEPENDENT_VALIDATION_MANIFESTS)),
+        next(iter(VALIDATION_MANIFESTS)),
     )
     st.session_state.setdefault("historical_workspace_restore_attempted", False)
     st.session_state.setdefault("historical_replay_profile", "Strict baseline")
@@ -458,17 +470,16 @@ def _status_header(st, settings: Settings) -> None:
     status_items = [
         ("Mode", "PAPER ONLY"),
         ("Order safety", order_safety),
-        (
-            "Equity",
-            _fmt_money(
-                account.get("equity", settings.account_equity_assumption)
-            ),
-        ),
-        ("Buying power", _fmt_money(account.get("buying_power"))),
+        ("Connection", str(account.get("status", "Not checked"))),
         ("Open positions", str(account.get("open_positions", 0))),
         ("Latest test P/L", _fmt_money(metrics.get("net_profit"))),
         ("Profile", settings.parameter_profile),
     ]
+    if settings.gui_show_account_details and account:
+        status_items[2:2] = [
+            ("Equity", _fmt_money(account.get("equity"))),
+            ("Buying power", _fmt_money(account.get("buying_power"))),
+        ]
     item_html = []
     for label, value in status_items:
         danger = (
@@ -588,17 +599,22 @@ def _account_check(st, settings: Settings) -> None:
             positions = list(broker.get_positions())
             st.session_state.account = {
                 "status": account.status,
-                "equity": account.equity,
-                "cash": account.cash,
-                "buying_power": account.buying_power,
                 "open_positions": len(positions),
-                "positions": [to_json_safe(value) for value in positions],
                 "checked_at": datetime.now(timezone.utc).isoformat(),
             }
+            if settings.gui_show_account_details:
+                st.session_state.account.update(
+                    {
+                        "equity": account.equity,
+                        "cash": account.cash,
+                        "buying_power": account.buying_power,
+                        "positions": [to_json_safe(value) for value in positions],
+                    }
+                )
             st.success("Connected to the Alpaca paper account. No order was placed.")
             st.rerun()
         except Exception as exc:
-            st.error(f"Paper-account check failed: {exc}")
+            st.error(f"Paper-account check failed: {_safe_error_text(exc)}")
 
 
 def _dashboard(st, pd, settings: Settings) -> None:
@@ -635,11 +651,17 @@ def _dashboard(st, pd, settings: Settings) -> None:
         account = st.session_state.account
         if account:
             st.success(f"{account.get('status', 'Connected')} · checked {account.get('checked_at', '')}")
-            _metric_cards(
-                st,
-                [("Cash", _fmt_money(account.get("cash")), None)],
-                "Paper account summary",
-            )
+            if settings.gui_show_account_details:
+                _metric_cards(
+                    st,
+                    [("Cash", _fmt_money(account.get("cash")), None)],
+                    "Paper account summary",
+                )
+            else:
+                st.caption(
+                    "Privacy mode is active: balances and position details "
+                    "are hidden. Only connection status and counts are shown."
+                )
         else:
             st.caption("Connection is checked only when you request it. The GUI never places an order during this check.")
         _account_check(st, settings)
@@ -791,7 +813,7 @@ def _dashboard(st, pd, settings: Settings) -> None:
                 except Exception as exc:
                     st.error(
                         "The SIP execution audit could not complete: "
-                        f"{type(exc).__name__}: {exc}"
+                        f"{type(exc).__name__}: {_safe_error_text(exc)}"
                     )
 
             audit_report = load_execution_audit(SHADOW_EXECUTION_AUDIT)
@@ -969,11 +991,16 @@ def _run_backtest(st, source_name: str, bars, settings: Settings) -> None:
     st.session_state.backtest_result = result
     st.session_state.backtest_bars = bars
     st.session_state.backtest_source = source_name
-    RUN_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(RUN_DIR)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     report = build_backtest_report(result)
     payload = {"run_id": stamp, "source": source_name, "config": settings.snapshot(), "result": report}
-    (RUN_DIR / f"{stamp}_{result.symbol}.json").write_text(json.dumps(to_json_safe(payload), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    run_path = RUN_DIR / f"{stamp}_{result.symbol}.json"
+    run_path.write_text(
+        json.dumps(to_json_safe(payload), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    run_path.chmod(0o600)
 
 
 def _backtest(st, pd, go, make_subplots, settings: Settings) -> None:
@@ -1003,7 +1030,7 @@ def _backtest(st, pd, go, make_subplots, settings: Settings) -> None:
             _run_backtest(st, name, bars, settings)
             st.success("Backtest complete. The run and exact configuration were archived in output/gui_backtests.")
         except Exception as exc:
-            st.error(f"Backtest could not run: {exc}")
+            st.error(f"Backtest could not run: {_safe_error_text(exc)}")
 
     result, bars = st.session_state.backtest_result, st.session_state.backtest_bars
     if not result or not bars:
@@ -1134,7 +1161,7 @@ def _historical_data(st, pd, settings: Settings) -> None:
             )
             if (
                 manifest.get("validation_name")
-                in INDEPENDENT_VALIDATION_MANIFESTS
+                in VALIDATION_MANIFESTS
             ):
                 st.session_state.historical_validation_selection = manifest[
                     "validation_name"
@@ -1167,15 +1194,15 @@ def _historical_data(st, pd, settings: Settings) -> None:
     )
     st.info("Captured rows come from an actual scanner cycle. Reconstructed rows are approximations derived from historical bars and estimated spreads.")
     with st.expander(
-        "Independent momentum validation batches", expanded=False
+        "Date-scoped validation manifests", expanded=False
     ):
         validation_name = st.selectbox(
             "Validation batch",
-            list(INDEPENDENT_VALIDATION_MANIFESTS),
+            list(VALIDATION_MANIFESTS),
             key="historical_validation_selection",
         )
         validation_targets = load_validation_targets(
-            INDEPENDENT_VALIDATION_MANIFESTS[validation_name]
+            VALIDATION_MANIFESTS[validation_name]
         )
         validation_dates = target_dates_by_symbol(validation_targets)
         validation_symbols = sorted(validation_dates)
@@ -1188,8 +1215,8 @@ def _historical_data(st, pd, settings: Settings) -> None:
         st.caption(
             f"{len(validation_targets)} symbols across "
             f"{len({target.trade_date for target in validation_targets})} "
-            "premarket momentum days. Symbols were selected from 9:05 a.m. "
-            "premarket lists without using their later outcomes."
+            "date-scoped rows. The bundled manifest is synthetic and exists "
+            "only to demonstrate the file format; it is not trading research."
         )
         st.dataframe(
             pd.DataFrame(
@@ -1244,7 +1271,9 @@ def _historical_data(st, pd, settings: Settings) -> None:
                             )
                         )
                     except Exception as exc:
-                        failures.append(f"{target.symbol}: {exc}")
+                        failures.append(
+                            f"{target.symbol}: {_safe_error_text(exc)}"
+                        )
                     progress.progress(
                         index / len(validation_targets),
                         text=(
@@ -1374,7 +1403,9 @@ def _historical_data(st, pd, settings: Settings) -> None:
                             feed="sip",
                         )
                     except Exception as exc:
-                        failures.append(f"{target.symbol}: {exc}")
+                        failures.append(
+                            f"{target.symbol}: {_safe_error_text(exc)}"
+                        )
                     progress.progress(
                         index / len(validation_targets),
                         text=(
@@ -1529,7 +1560,10 @@ def _historical_data(st, pd, settings: Settings) -> None:
                     st.success(f"Downloaded {len(paths)} symbol files using the {feed.upper()} feed.")
                     st.rerun()
                 except Exception as exc:
-                    st.error(f"Historical download failed: {exc}")
+                    st.error(
+                        "Historical download failed: "
+                        + _safe_error_text(exc)
+                    )
         if execution_col.button(
             "Download and cache 10-second bars",
             use_container_width=True,
@@ -1617,7 +1651,10 @@ def _historical_data(st, pd, settings: Settings) -> None:
                     )
                     st.rerun()
                 except Exception as exc:
-                    st.error(f"Ten-second historical download failed: {exc}")
+                    st.error(
+                        "Ten-second historical download failed: "
+                        + _safe_error_text(exc)
+                    )
     cached_files = cache.discover()
     if cached_files:
         with st.expander("Load cached historical bars", expanded=not bool(st.session_state.historical_bars)):
@@ -1685,7 +1722,9 @@ def _historical_data(st, pd, settings: Settings) -> None:
                     )
                     st.rerun()
                 except Exception as exc:
-                    st.error(f"Cached-bar load failed: {exc}")
+                    st.error(
+                        "Cached-bar load failed: " + _safe_error_text(exc)
+                    )
     uploads = st.file_uploader("Import one or more OHLCV CSV files", type=["csv"], accept_multiple_files=True, help="Each file may contain one or many symbols. Required columns: timestamp, symbol, open, high, low, close, volume.")
     if st.button("Load files into historical workspace", disabled=not uploads, use_container_width=True):
         try:
@@ -1718,7 +1757,8 @@ def _historical_data(st, pd, settings: Settings) -> None:
                 },
             )
             st.success(f"Loaded and cached {sum(len(v) for v in grouped.values()):,} bars across {len(grouped)} symbols.")
-        except Exception as exc: st.error(f"Import failed: {exc}")
+        except Exception as exc:
+            st.error(f"Import failed: {_safe_error_text(exc)}")
     bars_by_symbol = st.session_state.historical_bars
     if bars_by_symbol:
         st.subheader("Loaded workspace")
@@ -1901,7 +1941,8 @@ def _historical_data(st, pd, settings: Settings) -> None:
                 )
                 save_workspace_manifest(HISTORICAL_WORKSPACE_MANIFEST, workspace_manifest)
                 st.success(f"Recorded {count:,} reconstructed point-in-time scanner rows."); st.rerun()
-            except Exception as exc: st.error(f"Reconstruction failed: {exc}")
+            except Exception as exc:
+                st.error(f"Reconstruction failed: {_safe_error_text(exc)}")
         if b.button(
             "Run portfolio replay",
             use_container_width=True,
@@ -1941,7 +1982,8 @@ def _historical_data(st, pd, settings: Settings) -> None:
                     f"{len(result.rejected_trades)} rejections."
                 )
                 st.rerun()
-            except Exception as exc: st.error(f"Portfolio replay failed: {exc}")
+            except Exception as exc:
+                st.error(f"Portfolio replay failed: {_safe_error_text(exc)}")
         if c.button("Reconstruct and run portfolio replay",use_container_width=True,disabled=invalid_evaluation_window):
             try:
                 reconstructed_count = CandidateReconstructor(
@@ -1984,7 +2026,8 @@ def _historical_data(st, pd, settings: Settings) -> None:
                     f"{len(result.rejected_trades)} portfolio-gate rejections."
                 )
                 st.rerun()
-            except Exception as exc: st.error(f"Portfolio replay failed: {exc}")
+            except Exception as exc:
+                st.error(f"Portfolio replay failed: {_safe_error_text(exc)}")
         diagnostic_rows = store.candidates(
             source="reconstructed",
             passed_only=False,
@@ -2106,8 +2149,22 @@ def _trades(st, pd, settings: Settings) -> None:
             st.dataframe(pd.DataFrame(payload["result"]["trades"]), use_container_width=True, hide_index=True)
     with tabs[2]:
         account = st.session_state.account
-        if account and account.get("positions"): st.dataframe(pd.DataFrame(account["positions"]), use_container_width=True, hide_index=True)
-        else: st.info("Check the Alpaca paper account from Dashboard to load current positions. This view is read-only.")
+        if not settings.gui_show_account_details:
+            st.info(
+                "Position details are hidden by default. Set "
+                "GUI_SHOW_ACCOUNT_DETAILS=true only for a private local session."
+            )
+        elif account and account.get("positions"):
+            st.dataframe(
+                pd.DataFrame(account["positions"]),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info(
+                "Check the Alpaca paper account from Dashboard to load current "
+                "positions. This view is read-only."
+            )
 
 
 def _config_input(st, name: str, value: Any):
@@ -2138,7 +2195,8 @@ def _configuration(st, pd, settings: Settings) -> None:
                 for key in list(st.session_state):
                     if key.startswith("cfg_"): del st.session_state[key]
                 st.success("Profile loaded."); st.rerun()
-            except Exception as exc: st.error(str(exc))
+            except Exception as exc:
+                st.error(_safe_error_text(exc))
     with c:
         if st.button("Reset defaults", use_container_width=True):
             st.session_state.gui_settings = load_settings()
@@ -2159,12 +2217,14 @@ def _configuration(st, pd, settings: Settings) -> None:
             validate_settings(candidate)
             st.session_state.gui_settings=candidate
             st.success("Configuration is valid and active for new GUI backtests."); st.rerun()
-        except Exception as exc: st.error(str(exc))
+        except Exception as exc:
+            st.error(_safe_error_text(exc))
     st.subheader("Save current profile")
     name_col,button_col=st.columns([3,1]); profile_name=name_col.text_input("Profile name",value=settings.parameter_profile,label_visibility="collapsed")
     if button_col.button("Save profile",use_container_width=True):
         try: path=save_profile(PROFILE_DIR,profile_name,settings); st.success(f"Saved {path.name}")
-        except Exception as exc: st.error(str(exc))
+        except Exception as exc:
+            st.error(_safe_error_text(exc))
     differences=config_diff(Settings(),settings)
     st.subheader(f"Changes from code defaults ({len(differences)})")
     if differences: st.dataframe(pd.DataFrame(differences),use_container_width=True,hide_index=True)
@@ -2190,7 +2250,11 @@ def _logs(st, pd, settings: Settings) -> None:
         st.dataframe(pd.DataFrame(filtered[::-1]),use_container_width=True,hide_index=True)
         content="\n".join(json.dumps({k:v for k,v in row.items() if k!="_line"},default=str) for row in filtered)+"\n"
     else:
-        content=chosen.read_text(encoding="utf-8",errors="replace")
+        content = str(
+            redact_sensitive_fields(
+                chosen.read_text(encoding="utf-8", errors="replace")
+            )
+        )
         query=st.text_input("Search")
         lines=[line for line in content.splitlines() if not query or query.lower() in line.lower()]
         st.code("\n".join(lines[-1000:]),language="text")
@@ -2216,7 +2280,13 @@ def render_app() -> None:
 def main() -> int:
     """Launch the Streamlit app from the installed console script."""
     from streamlit.web import cli as stcli
-    sys.argv=["streamlit","run",str(Path(__file__).resolve()),"--server.headless=true"]
+    sys.argv = [
+        "streamlit",
+        "run",
+        str(Path(__file__).resolve()),
+        "--server.headless=true",
+        "--server.address=127.0.0.1",
+    ]
     return int(stcli.main())
 
 

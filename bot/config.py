@@ -1,8 +1,7 @@
-"""Versioned configuration for the paper-trading MVP.
+"""Versioned configuration for the paper-only trading application.
 
-The defaults mirror the decisions in Momentum_Bot_MVP_Pseudocode_v1_2.docx.
-Environment variables may override operational values, but every run records the
-configuration version and parameter profile in its diagnostic events.
+Environment variables may override operational values, but every run records
+the configuration version and parameter profile in its diagnostic events.
 """
 
 from __future__ import annotations
@@ -108,6 +107,11 @@ def _time(env: Mapping[str, str], name: str, default: time) -> time:
         ) from exc
 
 
+def _path(env: Mapping[str, str], name: str, default: Path) -> Path:
+    value = Path(_text(env, name, str(default))).expanduser()
+    return value if value.is_absolute() else PROJECT_ROOT / value
+
+
 @dataclass(frozen=True)
 class Settings:
     # Identity / traceability
@@ -122,6 +126,7 @@ class Settings:
     allow_live_trading: bool = False
     paper_order_submission_enabled: bool = False
     alpaca_data_feed: str = "iex"
+    gui_show_account_details: bool = False
 
     # Session
     timezone: str = "America/New_York"
@@ -219,7 +224,10 @@ class Settings:
             if isinstance(value, Decimal):
                 values[key] = str(value)
             elif isinstance(value, Path):
-                values[key] = str(value)
+                try:
+                    values[key] = str(value.resolve().relative_to(PROJECT_ROOT))
+                except ValueError:
+                    values[key] = "[EXTERNAL PATH REDACTED]"
             elif isinstance(value, time):
                 values[key] = value.isoformat()
         values["alpaca_api_key"] = "***" if self.alpaca_api_key else ""
@@ -243,6 +251,7 @@ def load_settings(environ: Optional[Mapping[str, str]] = None) -> Settings:
             env, "PAPER_ORDER_SUBMISSION_ENABLED", False
         ),
         alpaca_data_feed=_text(env, "ALPACA_DATA_FEED", "iex"),
+        gui_show_account_details=_bool(env, "GUI_SHOW_ACCOUNT_DETAILS", False),
         trade_window_start=_time(
             env, "TRADE_WINDOW_START", Settings.trade_window_start
         ),
@@ -311,8 +320,8 @@ def load_settings(environ: Optional[Mapping[str, str]] = None) -> Settings:
         backtest_exit_slippage_bps=_decimal(
             env, "BACKTEST_EXIT_SLIPPAGE_BPS", "10"
         ),
-        log_dir=Path(_text(env, "LOG_DIR", str(PROJECT_ROOT / "logs"))),
-        output_dir=Path(_text(env, "OUTPUT_DIR", str(PROJECT_ROOT / "output"))),
+        log_dir=_path(env, "LOG_DIR", PROJECT_ROOT / "logs"),
+        output_dir=_path(env, "OUTPUT_DIR", PROJECT_ROOT / "output"),
     )
     validate_settings(settings)
     return settings

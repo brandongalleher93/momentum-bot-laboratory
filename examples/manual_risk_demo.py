@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from bot.config import settings
+from bot.config import Settings
 from bot.models import RiskSnapshot, TradePlan
 from bot.risk_manager import RiskManager
 
@@ -19,7 +19,7 @@ def main() -> None:
         reward_to_risk=Decimal("2"),
         breakout_level=Decimal("5.08"),
     )
-    result = RiskManager(settings).evaluate(
+    result = RiskManager(Settings()).evaluate(
         plan, RiskSnapshot(), datetime.now(timezone.utc)
     )
     print(f"Approved: {result.approval.approved}")

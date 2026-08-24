@@ -1,380 +1,164 @@
 # Momentum Trading Bot MVP
 
-A paper-trading-only Python application for testing one momentum strategy:
-**Bull Flag / First Pullback**.
+Momentum Trading Bot is an educational Python application for studying a
+momentum strategy with historical data, simulated fills, and Alpaca paper
+trading. It is under active development, does not claim profitability, and is
+not financial advice.
 
-The bot scans market gainers, builds setups from completed one-minute candles,
-watches for an intrabar breakout, sizes the position against a daily risk budget,
-and submits protected bracket orders to an Alpaca paper account. Every important
-decision produces a structured diagnostic record so results can be traced back to
-the configuration and decision register that created them.
+The application is paper-only. Its Alpaca trading clients are constructed with
+`paper=True`, live-mode configuration is rejected, and paper order submission
+has a separate interlock that defaults to disabled. No code path in this
+repository is intended to submit a live brokerage order.
 
-The implementation follows
-`Trading Bot Doc Garage/Momentum_Bot_MVP_Pseudocode_v1_2.docx`.
+## Safety model
 
-> This is educational software under active development. It is not financial
-> advice, does not claim profitability, and cannot submit live orders.
+- `ALPACA_PAPER` must remain `true`.
+- `ALLOW_LIVE_TRADING` must remain `false`.
+- `PAPER_ORDER_SUBMISSION_ENABLED` defaults to `false`.
+- Shadow mode uses market data with local simulated fills and refuses to start
+  when the paper-submission interlock is enabled.
+- Existing broker orders or positions halt new entries for manual review.
+- The Streamlit dashboard binds to `127.0.0.1` and hides account balances and
+  position details by default.
 
-## How the application fits together
+Setting `PAPER_ORDER_SUBMISSION_ENABLED=true` can submit orders only to an
+Alpaca paper account. Do this only after reviewing the configuration, tests, and
+paper-account state. Changing the project to support live trading is outside
+its supported scope and would require a separate security and risk review.
 
-```text
-Alpaca market data
-        |
-        v
-Market scanner -----> rejected setup diagnostics
-        |
-        v
-Completed-bar Bull Flag detector
-        |
-        v
-Intrabar breakout trigger
-        |
-        v
-Trade plan ---> projected daily-risk gate
-        |                  |
-        |                  +--> rejection diagnostic
-        v
-Alpaca paper bracket order
-        |
-        v
-Order/fill state machine ---> JSONL event history
-        |
-        v
-Broker stop/target + completed-candle indicator exits
-```
+## Requirements
 
-The core strategy does not import Alpaca. It operates on the domain objects in
-`bot/models.py`, which makes the same decisions testable in live paper trading and
-historical simulations.
+- Python 3.11 or 3.12
+- An Alpaca paper account only for commands that connect to Alpaca
 
-## Safety behavior
+The test suite and sample backtest do not require credentials.
 
-- `ALPACA_PAPER` must be `true`.
-- `ALLOW_LIVE_TRADING` must be `false`.
-- Paper submission is disarmed by default.
-- Existing broker orders or positions halt new entries for manual reconciliation.
-- Accepted orders are not counted as positions until fill events arrive.
-- Pending orders reserve daily risk.
-- Partial fills cancel the remainder and require separate OCO protection.
-- If partial-fill protection fails, the adapter requests a flatten and halts entries.
-- The default backtest resolves unknowable stop/target order as stop-first.
-
-There are two separate controls intentionally:
-
-```env
-ALPACA_PAPER=true
-PAPER_ORDER_SUBMISSION_ENABLED=false
-```
-
-Keep paper submission disabled while learning, validating data, and reviewing logs.
-
-## Project map
-
-```text
-bot/
-  config.py            Versioned settings and safety validation
-  models.py            Bars, quotes, setups, plans, orders, and positions
-  diagnostics.py       Structured results and future-data guard
-  event_log.py         Canonical JSONL and flattened CSV helpers
-  indicators.py        VWAP, 9 EMA, candle metrics, and extensions
-  scanner.py           Price, gain, RVOL, volume, and spread filters
-  strategy.py          Bull Flag / First Pullback and intrabar trigger
-  risk_manager.py      Position sizing and projected daily-risk gate
-  order_state.py       Idempotent broker order lifecycle
-  broker.py            Broker-independent interface
-  alpaca_adapters.py   Alpaca paper broker and market-data adapters
-  execution.py         Risk reservations, submission, and fill handling
-  exits.py             Completed-candle VWAP/EMA/breakout exits
-  session.py           Local session state
-  app.py               Polling paper-trading orchestration
-  backtest.py          Conservative single-symbol historical engine
-  review.py            Metrics and report generation
-  cli.py               Command-line interface
-tests/                  Automated behavior checks
-examples/               Sample historical input
-```
-
-## Setup
-
-Python 3.9 or newer is supported.
+## Installation
 
 ```bash
-python3 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements.txt
+python -m pip install --requirement requirements.txt
 cp .env.example .env
+chmod 600 .env
 ```
 
-Add **paper-account** keys to `.env`. Never commit `.env`.
+`.env.example` contains obvious placeholder values. Add only paper-account
+credentials to the ignored `.env` file:
 
-Validate the local configuration without connecting:
+```env
+ALPACA_API_KEY=your_paper_api_key_here
+ALPACA_SECRET_KEY=your_paper_secret_key_here
+ALPACA_PAPER=true
+ALLOW_LIVE_TRADING=false
+PAPER_ORDER_SUBMISSION_ENABLED=false
+GUI_SHOW_ACCOUNT_DETAILS=false
+```
+
+Never commit `.env`, paste credentials into an issue, or put real credentials
+in screenshots.
+
+## Validate and test
 
 ```bash
 python -m bot validate
-```
-
-Verify Alpaca connectivity without placing an order:
-
-```bash
-python -m bot check
-```
-
-## Run the tests
-
-The core tests use the Python standard library and do not need Alpaca credentials:
-
-```bash
 python -m unittest discover -s tests -v
+python scripts/audit_public_release.py
 ```
 
-The test suite covers configuration safety, timestamp causality, indicators,
-scanner filters, Bull Flag detection, intrabar entries, risk sizing, pending-risk
-reservations, partial fills, nested logs, and ambiguous backtest candles.
+The public-release audit checks the working tree for secret-like values,
+private/generated files, absolute user paths, required safety defaults, and
+required public documentation. Maintainers can also audit referenced Git
+history before publication:
 
-## Run the sample backtest
+```bash
+python scripts/audit_public_release.py --history
+```
+
+## Local workflows
+
+Run the bundled sample backtest:
 
 ```bash
 python -m bot backtest examples/sample_bull_flag.csv
 ```
 
-The input schema is:
-
-```text
-timestamp,symbol,open,high,low,close,volume
-```
-
-Timestamps should describe completed bars and include an offset. A timezone-naive
-timestamp is interpreted using `America/New_York`.
-
-Outputs are written to:
-
-```text
-output/backtest_summary.json
-output/trades.csv
-```
-
-The current backtest accepts one already-screened symbol per invocation. That is a
-deliberate boundary: point-in-time universe membership, delisted symbols, splits,
-halts, and scanner history require a separately audited dataset before portfolio-
-level results would be trustworthy.
-
-## Run the GUI command center
-
-Install the project dependencies, then launch the Streamlit dashboard:
+Validate paper credentials without placing an order:
 
 ```bash
-source .venv/bin/activate
-streamlit run bot/gui.py
+python -m bot check
 ```
 
-The GUI includes:
-
-- a persistent paper-mode and safety-status header
-- a backtest lab with CSV upload, the included sample, Plotly candlesticks,
-  trade markers, performance metrics, and archived run reports
-- scanner and decision-reasoning views backed by the structured audit log
-- current and archived trades
-- validated, named configuration profiles for reproducible experiments
-- searchable and downloadable logs
-- an explicit read-only Alpaca paper-account check
-
-GUI backtest runs and profiles are stored under `output/`. The browser interface
-does not host the trading engine, enable live trading, or silently connect to an
-account. Paper order submission remains controlled by the existing `.env` safety
-flag.
-
-## Historical scanner replay
-
-Every live paper scanner cycle now records its complete point-in-time universe in
-`output/history/history.sqlite3`. Rows are labeled `captured`; candidates rebuilt
-from historical bars are labeled `reconstructed`, so the two evidence qualities
-cannot be confused.
-
-Historical minute bars are cached under `output/history/bars/`. Raw historical
-trades and derived ten-second bars are cached under `output/history/trades/` and
-`output/history/bars_10s/`.
-The history subsystem includes:
-
-- `HistoryStore` for scanner snapshots, data provenance, and replay runs
-- `BarCache`, `TradeCache`, and `AlpacaHistoricalDownloader` for paginated SDK
-  downloads and local SIP/IEX caching
-- deterministic aggregation of historical trades into completed ten-second bars
-- `CandidateReconstructor` for explicitly approximate historical candidate lists
-- `PortfolioReplayEngine` for one-minute setup context, optional ten-second
-  breakout triggering, and chronological portfolio gates across symbols
-
-Use raw corporate-action adjustment for downloaded data and keep one feed per
-experiment. IEX remains suitable for software validation; SIP is the intended
-feed for strategy evaluation.
-
-For live shadow testing before 9:30 a.m. Eastern, the scanner does not use
-Alpaca's market-movers endpoint because that endpoint retains the previous
-session's movers until the regular-market open. Instead, it refreshes a cached
-universe of active Nasdaq, NYSE, and AMEX securities once per minute, discovers
-gappers from 15-minute-delayed consolidated SIP snapshots, and computes volume
-and time-aligned RVOL from SIP history ending 16 minutes before the decision.
-Current IEX quotes and trades remain the execution source. This hybrid approach
-provides broader free-plan premarket discovery while explicitly retaining the
-15-minute discovery delay as a known limitation.
-
-## Run one paper polling cycle
-
-With paper submission still disabled, this gathers data, evaluates candidates, and
-logs decisions without submitting orders:
+Run one disarmed market-data and strategy cycle:
 
 ```bash
 python -m bot run --once
 ```
 
-After reviewing tests, connectivity, configuration, and logs, paper submission can
-be armed explicitly in `.env`:
-
-```env
-PAPER_ORDER_SUBMISSION_ENABLED=true
-```
-
-Then run one cycle again before considering a continuous process:
-
-```bash
-python -m bot run --once
-```
-
-Continuous paper polling:
-
-```bash
-python -m bot run
-```
-
-## Run real-time shadow paper
-
-Shadow mode uses the live market-data feed but records entries and exits only in
-a local SQLite ledger. It has no broker object and refuses to start whenever
-paper order submission is enabled. It applies the frozen premarket validation
-profile without changing the regular paper-bot settings.
-
-Use **Start shadow observation** on the Dashboard for continuous forward
-testing; **Stop shadow observation** ends it safely. A single diagnostic cycle
-can also be run from the Dashboard or a terminal:
+Run one real-time shadow cycle with local simulated fills:
 
 ```bash
 python -m bot shadow --once
 ```
 
-For continuous observation during the configured 7:00–11:30 a.m. Eastern
-window:
+Launch the local dashboard:
 
 ```bash
-python -m bot shadow
+streamlit run bot/gui.py
 ```
 
-### Automatic weekday shadow observation on macOS
+The repository includes a synthetic validation-manifest example solely to
+document the supported CSV format. It is not research data and must not be used
+as strategy evidence.
 
-The project can install a per-user macOS LaunchAgent so shadow observation does
-not need to be started manually each trading morning:
-
-```bash
-./.venv/bin/python -m bot shadow-schedule install
-```
-
-The schedule starts at 6:00 a.m. in the Mac's current local timezone, which is
-7:00 a.m. Eastern while the Mac is set to Central time. It also starts once at
-login. The shadow engine still enforces its own Monday–Friday, 7:00–11:30 a.m.
-Eastern window and still refuses to run if paper order submission is armed.
-macOS starts a missed calendar job when the computer wakes; if the Mac remains
-shut down or asleep until after 11:30 a.m. Eastern, the missed market data cannot
-be recovered.
-
-Check whether the schedule is configured and loaded:
-
-```bash
-./.venv/bin/python -m bot shadow-schedule status
-```
-
-Remove the automatic schedule:
-
-```bash
-./.venv/bin/python -m bot shadow-schedule uninstall
-```
-
-The LaunchAgent configuration is stored in the current user's
-`~/Library/LaunchAgents` directory and contains paths only; Alpaca credentials
-remain in the ignored project `.env` file. Because macOS blocks background
-agents from directly executing project files in the protected Documents folder,
-the schedule asks Terminal to run `launcher/automatic_shadow.command` in the
-background. A brief Terminal tab may appear at login or 6:00 a.m.; it starts the
-detached runner and then finishes. The dashboard continues to show the active
-shadow process. When automatic scheduling is installed, its Stop button ends
-only the current day's observation; the next weekday remains scheduled.
-
-Trades survive a restart in
-`output/shadow_paper/shadow_trades.sqlite3`; detailed cycle, entry, exit, and
-stale-quote events are written to `output/shadow_paper/events.jsonl`. Shadow
-fills use the observed ask for entries and bid for exits. Entry quotes older
-than 10 seconds are rejected; exit quotes older than 30 seconds or not newer
-than the entry quote are ignored. Invalid symbol quotes are logged and isolated
-without aborting the full cycle. While a position is open, monitoring takes
-priority and slow universe refreshes are skipped. Exit events retain observed
-stop slippage, realized loss, planned risk, and any risk overrun rather than
-assuming an unrealistically perfect stop fill.
-
-Every successfully fetched quote for an open shadow position also appends a
-`shadow_position_quote` event. This quote trail records freshness, whether the
-quote advanced beyond entry, bid/ask prices and sizes, exchange/condition/tape
-context when the provider supplies it, the current spread, stop/target state,
-and the risk overrun implied by the observed bid. A spread above the configured
-entry spread limit is tagged as an anomaly for later analysis. The tag is
-observability only: it does not delay an exit, require confirmation, or change
-the conservative fill price. To avoid slowing protective-stop monitoring, the
-exit path does not make a second request for latest-trade data.
-
-The current account has IEX real-time access, not SIP real-time access. Shadow
-results therefore test forward behavior and execution plumbing; they are not
-directly comparable to SIP historical replay performance.
-
-After shadow observation stops and all positions are closed, expand
-**Post-session SIP execution audit** on the Dashboard and choose **Run
-post-session SIP audit**. The audit makes read-only historical market-data
-requests and compares each recorded IEX entry and exit with nearby consolidated
-SIP quotes. It labels rows as confirmed, discrepant, or unresolved and writes a
-separate report to `output/shadow_paper/execution_audit.json`; it never updates
-`shadow_trades.sqlite3`.
-
-For a contradicted price-based stop or target, the report can continue the SIP
-quote path through the configured trading-window end. This reconstruction is
-explicitly an estimate: it checks only the protective stop, profit target, and
-end-of-window mark. It does not reproduce intervening VWAP, EMA, or
-breakout-close exits, and unresolved rows are excluded from the estimated
-SIP-path P/L.
-
-## Logs and traceability
-
-Detailed nested events use JSON Lines as the source of truth:
+## Repository structure
 
 ```text
-logs/decision_audit.jsonl
-logs/order_events.jsonl
-logs/config_change_history.jsonl
-logs/runtime.log
-logs/errors.log
+assets/       Public branding used by the dashboard
+bot/          Strategy, safety, broker, backtest, history, and GUI code
+examples/     Synthetic/sample inputs and a manual risk demonstration
+launcher/     Portable local macOS shadow-observation launcher
+scripts/      Public-release audit tooling
+tests/        Automated behavior and safety checks
 ```
 
-Each diagnostic includes its config version, parameter profile, decision-register
-version, decision time, and newest data timestamp. If the newest data is later than
-the decision, the diagnostic becomes a critical lookahead rejection.
+Runtime data is local and ignored:
 
-## Important current limitations
+```text
+.env
+logs/
+output/
+private_data/
+*.db, *.sqlite3, *.jsonl, *.parquet
+```
 
-- The paper account connection has been verified, but broker order submission
-  remains intentionally disabled while shadow testing gathers forward evidence.
-- Startup intentionally halts entries instead of reconstructing pre-existing trades.
-- Float is unavailable from the current Alpaca adapter and is logged as a preference
-  warning rather than a hard rejection.
-- The live loop polls REST endpoints; streaming can be added after the polling state
-  machine has been paper-tested.
-- Backtests use OHLCV bars and conservative assumptions, not exact exchange event order.
-- Historical replay includes experimental completed-ten-second micro-pullback
-  and reversal/reclaim detectors behind the reconstructed scanner gate. Their
-  thresholds and trade-frequency behavior still require out-of-sample validation.
-- Placeholder parameters must be validated on unseen dates and paper sessions.
+These paths may contain credentials, account metadata, market observations,
+generated trade records, or private research. Review them separately and never
+stage them for publication. New log and output files are restricted to the
+current OS user where POSIX permissions are available.
 
-These are boundaries to test and improve—not details to hide.
+## Dashboard privacy
+
+The dashboard is a local tool, not a hosted web application. Keep its loopback
+binding in place. By default, account checks show connection status and counts
+without balances or position details. `GUI_SHOW_ACCOUNT_DETAILS=true` should be
+used only in a private local session. Before sharing any screenshot, inspect the
+entire image for account information, positions, symbols, balances, logs,
+browser tabs, notifications, and local file paths.
+
+## Current limitations
+
+- This is alpha software under development, not a production trading system.
+- Paper behavior does not establish live-market safety or profitability.
+- Historical results are sensitive to data quality, survivorship bias,
+  slippage assumptions, and bar-level ambiguity.
+- The polling and reconciliation paths require continued paper testing.
+- Experimental features and parameters require independent validation.
+- The bundled example inputs are demonstrations, not performance evidence.
+
+See [SECURITY.md](SECURITY.md) for private vulnerability reporting and the
+local-data boundary.
+
+## License
+
+Released under the [MIT License](LICENSE).

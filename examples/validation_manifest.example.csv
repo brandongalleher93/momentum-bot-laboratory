@@ -1,0 +1,3 @@
+trade_date,symbol,premarket_gain_percent,observed_price,observed_volume,source_url
+2024-01-02,AAPL,12.50,10.00,750000,https://example.invalid/synthetic-validation-row
+2024-01-03,MSFT,15.00,12.00,900000,https://example.invalid/synthetic-validation-row
