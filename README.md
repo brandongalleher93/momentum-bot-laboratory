@@ -156,6 +156,10 @@ browser tabs, notifications, and local file paths.
 - Experimental features and parameters require independent validation.
 - The bundled example inputs are demonstrations, not performance evidence.
 
+See [SHADOW_TESTING_REVIEW.md](SHADOW_TESTING_REVIEW.md) for the current
+forward-testing checkpoint, its evidence limits, and the next bounded research
+milestone.
+
 See [SECURITY.md](SECURITY.md) for private vulnerability reporting and the
 local-data boundary.
 
