@@ -102,14 +102,27 @@ should:
 
 ## Operational follow-up
 
-The installed macOS LaunchAgent still uses the private-development label
-`local.brandon.tradingbot.shadow`. At this checkpoint it was loaded, not
-running after the observation window, had 15 recorded launches, and reported a
-last exit code of zero.
+Status: resolved on August 25, 2026.
 
-The public-release code uses `app.momentumbot.shadow`, so the current
-`shadow-schedule status` command does not recognize the installed older label.
-The existing schedule is still launching the repository's portable command,
-but label migration must be handled as a separate operational change with a
-real scheduled-launch smoke test. Installing or uninstalling from the new code
-before that migration is reviewed could leave duplicate or orphaned agents.
+The scheduler now recognizes the former private-development label
+`local.brandon.tradingbot.shadow` and migrates it transactionally to the public
+`app.momentumbot.shadow` identity during installation. It restores the prior
+managed schedule if the new agent cannot bootstrap. Uninstall removes either
+managed identity so a legacy agent cannot be orphaned, and status reports both
+identities plus whether migration is required.
+
+The real-system migration and smoke test verified:
+
+- the new plist is valid, private to the current OS user, configured, and
+  loaded;
+- the legacy plist and loaded service are absent;
+- `launchctl` recorded the automatic `RunAtLoad` launch and an explicit
+  `kickstart`, for two runs with last exit code zero;
+- each launch reached the application and appended an `outside_entry_window`
+  heartbeat after the 11:30 Eastern cutoff; and
+- the ledger retained 52 closed trades and zero open trades.
+
+The post-window heartbeat proves the complete macOS-to-application launch path
+without claiming a successful morning observation session. The next weekday
+calendar launch remains routine operational monitoring, not a blocker for the
+completed identity migration.
