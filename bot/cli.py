@@ -49,6 +49,17 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("install", "start", "status", "uninstall"),
         help="Install, start, inspect, or remove automatic shadow observation.",
     )
+    stop_diagnostic = subcommands.add_parser(
+        "confirmed-stop-diagnostic",
+        help=(
+            "Build a read-only comparison of confirmed and discrepant "
+            "protective-stop exits."
+        ),
+    )
+    stop_diagnostic.add_argument("--ledger", type=Path, default=None)
+    stop_diagnostic.add_argument("--audit", type=Path, default=None)
+    stop_diagnostic.add_argument("--events", type=Path, default=None)
+    stop_diagnostic.add_argument("--report", type=Path, default=None)
 
     backtest = subcommands.add_parser(
         "backtest", help="Backtest one pre-screened symbol from OHLCV CSV data."
@@ -140,6 +151,43 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     settings = load_settings()
+
+    if args.command == "confirmed-stop-diagnostic":
+        from bot.confirmed_stop_diagnostic import (
+            build_confirmed_stop_diagnostic,
+            save_confirmed_stop_diagnostic,
+        )
+
+        shadow_output = settings.output_dir / "shadow_paper"
+        ledger_path = args.ledger or shadow_output / "shadow_trades.sqlite3"
+        audit_path = args.audit or shadow_output / "execution_audit.json"
+        events_path = args.events or shadow_output / "events.jsonl"
+        report_path = (
+            args.report or shadow_output / "confirmed_stop_diagnostic.json"
+        )
+        report = build_confirmed_stop_diagnostic(
+            ledger_path,
+            audit_path,
+            events_path,
+            timezone_name=settings.timezone,
+        )
+        save_confirmed_stop_diagnostic(
+            report,
+            report_path,
+            source_paths=(ledger_path, audit_path, events_path),
+        )
+        counts = report["classification_counts"]
+        print(
+            "Confirmed-stop diagnostic complete: "
+            f"{counts['confirmed']} confirmed, "
+            f"{counts['discrepant']} discrepant, "
+            f"{counts['unresolved']} unresolved"
+        )
+        print(f"Report: {report_path}")
+        print(
+            "Exploratory only: this report does not authorize parameter changes."
+        )
+        return 0
 
     if args.command == "validate":
         validate_settings(settings)
