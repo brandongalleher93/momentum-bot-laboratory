@@ -26,6 +26,52 @@ Alpaca paper account. Do this only after reviewing the configuration, tests, and
 paper-account state. Changing the project to support live trading is outside
 its supported scope and would require a separate security and risk review.
 
+## Application Screenshots
+
+These screens show the implemented local application interface. Momentum Bot
+Laboratory remains paper-trading software under active development; the views
+below are not evidence of profitability or readiness for live trading.
+
+### Dashboard overview
+
+![Momentum Bot Laboratory dashboard showing paper-only mode, disarmed order safety, system status, and recent decisions](Docs/Images/Dashboard-Overview.png)
+
+The dashboard provides an operational overview of the current experiment,
+paper-trading status, connection state, and recent strategy decisions while
+keeping paper order submission visibly disarmed.
+
+### Strategy analysis and decision reasoning
+
+![Strategy analysis table showing evaluated symbols, strategy modules, decision status, and rejection reasons](Docs/Images/Strategy-Analysis.png)
+
+The decision table records how market observations move through scanner and
+strategy criteria, including explicit rejection reasons that make evaluation
+outcomes easier to inspect.
+
+### Configuration and risk controls
+
+![Configuration workspace showing adjustable account assumptions and paper-trading risk limits](Docs/Images/Configuration-Risk-Controls.png)
+
+The configuration workspace exposes adjustable research and paper-trading
+parameters. Changes are validated before they apply to the GUI session, while
+credentials and live-trading safety fields remain non-editable.
+
+#### Active shadow protections
+
+![Read-only active shadow protections showing position, loss, trading-window, data-source, and broker-order controls](Docs/Images/Active-Shadow-Protections.png)
+
+The read-only protections view summarizes the controls enforced during
+real-time shadow simulation, including position and loss limits, the trading
+window, and disabled broker-order submission.
+
+### Execution and audit logs
+
+![Logs workspace showing event-source selection, severity filters, search, and structured audit records](Docs/Images/Execution-Logs.png)
+
+The logs workspace filters structured decision and execution evidence by file,
+severity, and search text to support troubleshooting and traceable review while
+preserving the canonical event files.
+
 ## Requirements
 
 - Python 3.11 or 3.12
@@ -116,6 +162,7 @@ as strategy evidence.
 ```text
 assets/       Public branding used by the dashboard
 bot/          Strategy, safety, broker, backtest, history, and GUI code
+Docs/         Application screenshots used by this README
 examples/     Synthetic/sample inputs and a manual risk demonstration
 launcher/     Portable local macOS shadow-observation launcher
 scripts/      Public-release audit tooling
