@@ -66,6 +66,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "shadow-schedule":
         from bot.shadow_schedule import (
             install_launch_agent,
+            legacy_launch_agent_is_configured,
+            legacy_launch_agent_is_loaded,
+            legacy_launch_agent_path,
             launch_agent_is_configured,
             launch_agent_is_loaded,
             launch_agent_path,
@@ -125,6 +128,15 @@ def main(argv: list[str] | None = None) -> int:
             + ("yes" if launch_agent_is_configured() else "no")
         )
         print("Loaded: " + ("yes" if launch_agent_is_loaded() else "no"))
+        legacy_configured = legacy_launch_agent_is_configured()
+        legacy_loaded = legacy_launch_agent_is_loaded()
+        print(f"Legacy LaunchAgent file: {legacy_launch_agent_path()}")
+        print("Legacy configured: " + ("yes" if legacy_configured else "no"))
+        print("Legacy loaded: " + ("yes" if legacy_loaded else "no"))
+        print(
+            "Migration required: "
+            + ("yes" if legacy_configured or legacy_loaded else "no")
+        )
         return 0
 
     settings = load_settings()

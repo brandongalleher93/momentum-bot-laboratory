@@ -14,6 +14,8 @@ from bot.config import PROJECT_ROOT
 
 LAUNCH_AGENT_LABEL = "app.momentumbot.shadow"
 LAUNCH_AGENT_FILENAME = f"{LAUNCH_AGENT_LABEL}.plist"
+LEGACY_LAUNCH_AGENT_LABEL = "local.brandon.tradingbot.shadow"
+LEGACY_LAUNCH_AGENT_FILENAME = f"{LEGACY_LAUNCH_AGENT_LABEL}.plist"
 AUTOMATIC_START_LOCAL_HOUR = 6
 AUTOMATIC_START_LOCAL_MINUTE = 0
 WEEKDAYS = tuple(range(1, 6))
@@ -23,6 +25,11 @@ AUTOMATIC_LAUNCHER_RELATIVE_PATH = Path("launcher/automatic_shadow.command")
 def launch_agent_path(home: Path | None = None) -> Path:
     base = home or Path.home()
     return base / "Library" / "LaunchAgents" / LAUNCH_AGENT_FILENAME
+
+
+def legacy_launch_agent_path(home: Path | None = None) -> Path:
+    base = home or Path.home()
+    return base / "Library" / "LaunchAgents" / LEGACY_LAUNCH_AGENT_FILENAME
 
 
 def launch_agent_payload(
@@ -64,12 +71,24 @@ def launch_agent_is_configured(home: Path | None = None) -> bool:
     return launch_agent_path(home).is_file()
 
 
+def legacy_launch_agent_is_configured(home: Path | None = None) -> bool:
+    return legacy_launch_agent_path(home).is_file()
+
+
 def launch_agent_is_loaded(*, uid: int | None = None) -> bool:
+    return _launch_agent_is_loaded(LAUNCH_AGENT_LABEL, uid=uid)
+
+
+def legacy_launch_agent_is_loaded(*, uid: int | None = None) -> bool:
+    return _launch_agent_is_loaded(LEGACY_LAUNCH_AGENT_LABEL, uid=uid)
+
+
+def _launch_agent_is_loaded(label: str, *, uid: int | None = None) -> bool:
     if platform.system() != "Darwin":
         return False
     domain = f"gui/{uid if uid is not None else os.getuid()}"
     completed = subprocess.run(
-        ["launchctl", "print", f"{domain}/{LAUNCH_AGENT_LABEL}"],
+        ["launchctl", "print", f"{domain}/{label}"],
         capture_output=True,
         text=True,
         check=False,
@@ -99,7 +118,15 @@ def install_launch_agent(
         )
 
     destination = launch_agent_path(home)
-    _refuse_unrelated_existing_agent(destination)
+    legacy_destination = legacy_launch_agent_path(home)
+    current_payload = _load_managed_agent(
+        destination,
+        expected_label=LAUNCH_AGENT_LABEL,
+    )
+    legacy_payload = _load_managed_agent(
+        legacy_destination,
+        expected_label=LEGACY_LAUNCH_AGENT_LABEL,
+    )
     destination.parent.mkdir(parents=True, exist_ok=True)
     log_directory = (home or Path.home()) / "Library" / "Logs" / "Trading Bot"
     log_directory.mkdir(parents=True, exist_ok=True)
@@ -111,6 +138,17 @@ def install_launch_agent(
         text=True,
         check=False,
     )
+    if legacy_payload is not None:
+        subprocess.run(
+            [
+                "launchctl",
+                "bootout",
+                f"{domain}/{LEGACY_LAUNCH_AGENT_LABEL}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
     _write_plist_atomically(
         destination,
         launch_agent_payload(
@@ -126,10 +164,20 @@ def install_launch_agent(
     )
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout).strip()
+        rollback_detail = _restore_previous_agent(
+            domain=domain,
+            destination=destination,
+            current_payload=current_payload,
+            legacy_destination=legacy_destination,
+            legacy_payload=legacy_payload,
+        )
         raise RuntimeError(
             "launchctl could not load the automatic shadow schedule"
             + (f": {detail}" if detail else ".")
+            + rollback_detail
         )
+    if legacy_payload is not None:
+        legacy_destination.unlink(missing_ok=True)
     return destination
 
 
@@ -141,17 +189,32 @@ def uninstall_launch_agent(
     """Unload and remove only this project's LaunchAgent configuration."""
 
     _require_macos()
-    destination = launch_agent_path(home)
-    domain = f"gui/{uid if uid is not None else os.getuid()}"
-    subprocess.run(
-        ["launchctl", "bootout", f"{domain}/{LAUNCH_AGENT_LABEL}"],
-        capture_output=True,
-        text=True,
-        check=False,
+    destinations = (
+        (LAUNCH_AGENT_LABEL, launch_agent_path(home)),
+        (LEGACY_LAUNCH_AGENT_LABEL, legacy_launch_agent_path(home)),
     )
-    existed = destination.exists()
-    destination.unlink(missing_ok=True)
-    return existed
+    managed = [
+        (label, destination)
+        for label, destination in destinations
+        if _load_managed_agent(
+            destination,
+            expected_label=label,
+        )
+        is not None
+    ]
+    domain = f"gui/{uid if uid is not None else os.getuid()}"
+    removed = bool(managed)
+    for label, _destination in destinations:
+        completed = subprocess.run(
+            ["launchctl", "bootout", f"{domain}/{label}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        removed = removed or completed.returncode == 0
+    for _label, destination in managed:
+        destination.unlink()
+    return removed
 
 
 def _require_macos() -> None:
@@ -159,9 +222,13 @@ def _require_macos() -> None:
         raise RuntimeError("Automatic shadow scheduling is supported on macOS.")
 
 
-def _refuse_unrelated_existing_agent(path: Path) -> None:
+def _load_managed_agent(
+    path: Path,
+    *,
+    expected_label: str,
+) -> dict | None:
     if not path.exists():
-        return
+        return None
     try:
         with path.open("rb") as source:
             existing = plistlib.load(source)
@@ -169,10 +236,43 @@ def _refuse_unrelated_existing_agent(path: Path) -> None:
         raise RuntimeError(
             f"Refusing to replace unreadable LaunchAgent file {path}."
         ) from exc
-    if existing.get("Label") != LAUNCH_AGENT_LABEL:
+    if existing.get("Label") != expected_label:
         raise RuntimeError(
             f"Refusing to replace unrelated LaunchAgent file {path}."
         )
+    return existing
+
+
+def _restore_previous_agent(
+    *,
+    domain: str,
+    destination: Path,
+    current_payload: dict | None,
+    legacy_destination: Path,
+    legacy_payload: dict | None,
+) -> str:
+    rollback_path: Path | None = None
+    if current_payload is not None:
+        _write_plist_atomically(destination, current_payload)
+        rollback_path = destination
+    else:
+        destination.unlink(missing_ok=True)
+        if legacy_payload is not None:
+            rollback_path = legacy_destination
+    if rollback_path is None:
+        return ""
+    rollback = subprocess.run(
+        ["launchctl", "bootstrap", domain, str(rollback_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if rollback.returncode == 0:
+        return " Previous schedule restored."
+    detail = (rollback.stderr or rollback.stdout).strip()
+    return " Previous schedule could not be restored" + (
+        f": {detail}." if detail else "."
+    )
 
 
 def _write_plist_atomically(path: Path, payload: dict) -> None:
