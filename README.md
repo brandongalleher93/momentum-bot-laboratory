@@ -147,6 +147,19 @@ Run one real-time shadow cycle with local simulated fills:
 python -m bot shadow --once
 ```
 
+Build the read-only confirmed-stop diagnostic from the ignored local ledger,
+execution audit, and event log:
+
+```bash
+python -m bot confirmed-stop-diagnostic
+```
+
+The derived report remains private under `output/shadow_paper/`. It keeps raw,
+confirmed, and reconstructed outcomes separate and does not authorize a
+strategy or risk-parameter change. See
+[CONFIRMED_STOP_DIAGNOSTIC_PLAN.md](CONFIRMED_STOP_DIAGNOSTIC_PLAN.md) for the
+predeclared hypothesis, validation criteria, and decision boundary.
+
 Launch the local dashboard:
 
 ```bash

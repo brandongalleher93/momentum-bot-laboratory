@@ -100,6 +100,12 @@ should:
 5. Validate that hypothesis with new paper-only observations or an isolated
    replay before proposing a parameter change.
 
+Implementation status: the read-only report generator and the predeclared
+`CS-001` validation boundary were added on August 26, 2026. This makes the
+diagnostic reproducible but does not turn the existing exploratory sample into
+validation evidence. See
+[CONFIRMED_STOP_DIAGNOSTIC_PLAN.md](CONFIRMED_STOP_DIAGNOSTIC_PLAN.md).
+
 ## Operational follow-up
 
 Status: resolved on August 25, 2026.

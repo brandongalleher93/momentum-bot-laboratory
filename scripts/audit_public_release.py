@@ -47,6 +47,10 @@ TEXT_SUFFIXES = {
     ".yml",
 }
 PUBLIC_IMAGE_SUFFIXES = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
+PUBLIC_IMAGE_ROOTS = {
+    ("Docs", "Images"),
+    ("assets", "branding"),
+}
 
 
 def _git(*arguments: str) -> str:
@@ -82,7 +86,7 @@ def _is_forbidden_path(path: Path) -> bool:
         return True
     if (
         path.suffix.lower() in PUBLIC_IMAGE_SUFFIXES
-        and relative.parts[:2] != ("assets", "branding")
+        and relative.parts[:2] not in PUBLIC_IMAGE_ROOTS
     ):
         return True
     if (
