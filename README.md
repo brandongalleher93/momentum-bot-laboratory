@@ -170,6 +170,22 @@ The repository includes a synthetic validation-manifest example solely to
 document the supported CSV format. It is not research data and must not be used
 as strategy evidence.
 
+## Public development and private runtime
+
+This public repository is the source authority for application code,
+documentation, tests, and public assets. Develop and review changes here first.
+After an accepted revision reaches the public `main` branch, update the private
+runtime checkout to that exact revision with a fast-forward-only Git operation,
+rerun its safety checks, and then restart its paper-only process.
+
+The synchronization boundary is intentionally one way for repository content:
+public code may be promoted into the private runtime, while credentials, local
+configuration, logs, ledgers, market-data caches, reports, and private research
+must never be copied or pushed into this repository. If a source-code fix is
+first identified in the private runtime, reproduce the smallest reviewable fix
+here with synthetic fixtures, run the public-release audit, and publish it from
+this repository before updating the runtime again.
+
 ## Repository structure
 
 ```text

@@ -120,6 +120,9 @@ HISTORICAL_REPLAY_PROFILES = {
 
 REPLAY_GUARDRAIL_PRESETS = {
     "Baseline — no experimental guardrails": ReplayGuardrails(),
+    "Maximum 1 trade per symbol/day only": ReplayGuardrails(
+        max_trades_per_symbol_day=1
+    ),
     "2-minute re-entry cooldown only": ReplayGuardrails(
         reentry_cooldown_minutes=2
     ),
@@ -227,6 +230,7 @@ def _init_state(st) -> None:
     st.session_state.setdefault("portfolio_result", None)
     st.session_state.setdefault("portfolio_result_profile", None)
     st.session_state.setdefault("portfolio_result_guardrail_preset", None)
+    st.session_state.setdefault("paired_reentry_results", None)
 
 
 def _style(st) -> None:
@@ -1885,6 +1889,16 @@ def _historical_data(st, pd, settings: Settings) -> None:
                 "candidate and market-data history. Filtered opportunities will "
                 "appear under Portfolio rejections."
             )
+        paired_source = st.selectbox(
+            "One-entry comparison candidate source",
+            ("captured", "reconstructed"),
+            format_func=lambda value: (
+                "Captured shadow scanner history"
+                if value == "captured"
+                else "Reconstructed historical candidates"
+            ),
+            help="The paired comparison runs both rules against the same source.",
+        )
         spread = st.number_input("Estimated reconstructed spread (%)",min_value=0.01,max_value=5.0,value=float(st.session_state.get("historical_spread_percent", 0.50)),step=0.05,key="historical_spread_percent")
         workspace_feed = st.session_state.historical_feed or manifest.get("feed", "sip")
         workspace_paths = {
@@ -2028,6 +2042,76 @@ def _historical_data(st, pd, settings: Settings) -> None:
                 st.rerun()
             except Exception as exc:
                 st.error(f"Portfolio replay failed: {_safe_error_text(exc)}")
+        if st.button(
+            "Compare baseline with one entry per symbol/day",
+            use_container_width=True,
+            disabled=invalid_evaluation_window or not bars_by_symbol,
+            help=(
+                "Runs both rules on the same loaded historical workspace. "
+                "It does not change shadow or broker settings."
+            ),
+        ):
+            try:
+                if paired_source == "captured":
+                    captured = store.candidates(
+                        source="captured",
+                        passed_only=True,
+                        start_time=evaluation_start,
+                        end_time=evaluation_end,
+                    )
+                    missing_symbols = {
+                        row["symbol"] for row in captured
+                    } - set(bars_by_symbol)
+                    if missing_symbols:
+                        raise ValueError(
+                            "Loaded bars omit captured passing symbols: "
+                            + ", ".join(sorted(missing_symbols)[:10])
+                            + ("…" if len(missing_symbols) > 10 else "")
+                        )
+                replay_inputs = {
+                    "execution_bars_by_symbol": execution_bars_by_symbol or None,
+                    "execution_trade_paths_by_symbol": {
+                        symbol: Path(path)
+                        for symbol, path in (
+                            st.session_state.historical_trade_workspace_paths.items()
+                        )
+                        if symbol in bars_by_symbol and Path(path).exists()
+                    } or None,
+                    "source": paired_source,
+                    "feed": workspace_feed,
+                    "evaluation_start": evaluation_start,
+                    "evaluation_end": evaluation_end,
+                    "evaluation_dates_by_symbol": active_validation_dates or None,
+                }
+                engine = PortfolioReplayEngine(replay_settings, store)
+                baseline = engine.run(
+                    bars_by_symbol,
+                    guardrails=ReplayGuardrails(),
+                    **replay_inputs,
+                )
+                candidate = engine.run(
+                    bars_by_symbol,
+                    guardrails=ReplayGuardrails(max_trades_per_symbol_day=1),
+                    **replay_inputs,
+                )
+                if baseline.candidate_count == 0:
+                    raise ValueError(
+                        "No scanner-passing candidates were available for the "
+                        "selected source and date range."
+                    )
+                st.session_state.paired_reentry_results = (
+                    baseline,
+                    candidate,
+                    paired_source,
+                    replay_profile,
+                    evaluation_start_date,
+                    evaluation_end_date,
+                )
+                st.session_state.portfolio_result_profile = replay_profile
+                save_workspace_manifest(HISTORICAL_WORKSPACE_MANIFEST, workspace_manifest)
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Paired replay failed: {_safe_error_text(exc)}")
         diagnostic_rows = store.candidates(
             source="reconstructed",
             passed_only=False,
@@ -2059,6 +2143,50 @@ def _historical_data(st, pd, settings: Settings) -> None:
                 ]
                 with st.expander("Why reconstructed candidates failed the scanner"):
                     st.dataframe(pd.DataFrame(failure_table), use_container_width=True, hide_index=True)
+    paired = st.session_state.paired_reentry_results
+    if paired:
+        baseline, candidate, source, profile, start_date, end_date = paired
+        st.subheader("One-entry experiment")
+        st.caption(
+            f"Both runs use {source} candidate history from {start_date} "
+            f"through {end_date}, with the {profile} replay profile. "
+            "Historical replay is exploratory; it does not change the shadow bot."
+        )
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Rule": label,
+                        "Trades": result.metrics["total_trades"],
+                        "Net P/L": float(result.metrics["net_profit"]),
+                        "Average R": (
+                            float(result.metrics["average_r_multiple"])
+                            if result.metrics["average_r_multiple"] is not None
+                            else None
+                        ),
+                        "Max drawdown": float(result.metrics["max_drawdown"]),
+                    }
+                    for label, result in (
+                        ("Baseline", baseline),
+                        ("One entry per symbol/day", candidate),
+                    )
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(
+            "Candidate minus baseline net P/L: "
+            + _fmt_money(
+                candidate.metrics["net_profit"] - baseline.metrics["net_profit"]
+            )
+            + ". Results depend on historical data coverage and fill assumptions."
+        )
+        filtered = [
+            row for row in candidate.rejected_trades
+            if row["reason"].startswith("Replay guardrail: maximum trades")
+        ]
+        st.caption(f"Later same-symbol entries filtered: {len(filtered)}.")
     result=st.session_state.portfolio_result
     if result:
         st.subheader("Latest portfolio replay")
