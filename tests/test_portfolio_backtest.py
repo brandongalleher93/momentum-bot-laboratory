@@ -106,6 +106,57 @@ class PortfolioReplayTests(unittest.TestCase):
         self.assertEqual(len(rejected), 1)
         self.assertIn("maximum trades", rejected[0]["reason"].lower())
 
+    def test_one_entry_guardrail_resets_on_eastern_trading_day(self):
+        first = datetime(2026, 7, 10, 14, 0, tzinfo=timezone.utc)
+        next_day = first + timedelta(days=1)
+        trades = [
+            self._trade(first, first + timedelta(seconds=30), "-1"),
+            self._trade(
+                first + timedelta(minutes=5),
+                first + timedelta(minutes=5, seconds=30),
+                "2",
+            ),
+            self._trade(next_day, next_day + timedelta(seconds=30), "2"),
+        ]
+
+        kept, rejected = PortfolioReplayEngine._apply_replay_guardrails(
+            trades,
+            ReplayGuardrails(max_trades_per_symbol_day=1),
+            ZoneInfo("America/New_York"),
+        )
+
+        self.assertEqual(kept, [trades[0], trades[2]])
+        self.assertEqual(len(rejected), 1)
+
+    def test_rejected_portfolio_trade_does_not_consume_symbol_allowance(self):
+        start = datetime(2026, 7, 10, 14, 0, tzinfo=timezone.utc)
+        blocker = self._trade(
+            start,
+            start + timedelta(minutes=3),
+            "1",
+            symbol="OTHER",
+        )
+        rejected_for_capacity = self._trade(
+            start + timedelta(minutes=1),
+            start + timedelta(minutes=2),
+            "1",
+        )
+        later = self._trade(
+            start + timedelta(minutes=4),
+            start + timedelta(minutes=5),
+            "1",
+        )
+        engine = PortfolioReplayEngine(Settings(max_open_positions=1), None)
+
+        kept, rejected = engine._apply_portfolio_gate(
+            [blocker, rejected_for_capacity, later],
+            ReplayGuardrails(max_trades_per_symbol_day=1),
+            ZoneInfo("America/New_York"),
+        )
+
+        self.assertEqual(kept, [blocker, later])
+        self.assertEqual(rejected[0]["reason"], "Maximum open positions reached.")
+
     def test_replay_ignores_stale_candidates_outside_loaded_scope(self):
         with tempfile.TemporaryDirectory() as directory:
             settings = Settings()
