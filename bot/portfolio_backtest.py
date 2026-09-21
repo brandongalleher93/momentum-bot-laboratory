@@ -245,32 +245,7 @@ class PortfolioReplayEngine:
                         current["expected_values"] = detail["expected_values"]
                 strategy_diagnostics.extend(grouped.values())
         proposed.sort(key=lambda trade: (trade.entry_time, trade.symbol))
-        proposed, guardrail_rejections = self._apply_replay_guardrails(
-            proposed, guardrails, eastern
-        )
-        accepted: list[BacktestTrade] = []
-        rejected: list[dict] = list(guardrail_rejections)
-        for trade in proposed:
-            day = trade.entry_time.astimezone(eastern).date()
-            day_trades = [value for value in accepted if value.entry_time.astimezone(eastern).date() == day]
-            realized_loss = abs(
-                sum(
-                    (
-                        value.realized_pnl
-                        for value in day_trades
-                        if value.exit_time <= trade.entry_time
-                        and value.realized_pnl < 0
-                    ),
-                    Decimal("0"),
-                )
-            )
-            overlapping = [value for value in accepted if value.entry_time <= trade.entry_time < value.exit_time]
-            reason = None
-            if len(overlapping) >= self.settings.max_open_positions: reason = "Maximum open positions reached."
-            elif realized_loss >= self.settings.max_daily_loss: reason = "Daily loss limit already reached."
-            elif self.settings.max_trades_per_day is not None and len(day_trades) >= self.settings.max_trades_per_day: reason = "Maximum trades per day reached."
-            if reason: rejected.append({"symbol": trade.symbol, "entry_time": trade.entry_time.isoformat(), "reason": reason})
-            else: accepted.append(trade)
+        accepted, rejected = self._apply_portfolio_gate(proposed, guardrails, eastern)
         run_id = str(uuid4())
         metrics = calculate_metrics(accepted)
         timestamps = [
@@ -346,6 +321,45 @@ class PortfolioReplayEngine:
             self.store.record_replay({"run_id":run_id,"created_at":datetime.now(timezone.utc).isoformat(),"source":source,"feed":feed,"start_time":min(timestamps).isoformat(),"end_time":max(timestamps).isoformat(),"symbol_count":len(result.symbols),"candidate_count":result.candidate_count,"trade_count":len(accepted),"config":replay_config,"metrics":metrics,"notes":notes})
         return result
 
+    def _apply_portfolio_gate(
+        self,
+        proposed: Sequence[BacktestTrade],
+        guardrails: ReplayGuardrails,
+        eastern: ZoneInfo,
+    ) -> tuple[list[BacktestTrade], list[dict]]:
+        accepted: list[BacktestTrade] = []
+        rejected: list[dict] = []
+        for trade in proposed:
+            day = trade.entry_time.astimezone(eastern).date()
+            day_trades = [value for value in accepted if value.entry_time.astimezone(eastern).date() == day]
+            same_symbol = [value for value in day_trades if value.symbol == trade.symbol]
+            realized_loss = abs(
+                sum(
+                    (
+                        value.realized_pnl
+                        for value in day_trades
+                        if value.exit_time <= trade.entry_time
+                        and value.realized_pnl < 0
+                    ),
+                    Decimal("0"),
+                )
+            )
+            overlapping = [value for value in accepted if value.entry_time <= trade.entry_time < value.exit_time]
+            reason = self._guardrail_reason(trade, same_symbol, guardrails)
+            if reason is None:
+                if len(overlapping) >= self.settings.max_open_positions:
+                    reason = "Maximum open positions reached."
+                elif realized_loss >= self.settings.max_daily_loss:
+                    reason = "Daily loss limit already reached."
+                elif (
+                    self.settings.max_trades_per_day is not None
+                    and len(day_trades) >= self.settings.max_trades_per_day
+                ):
+                    reason = "Maximum trades per day reached."
+            if reason: rejected.append({"symbol": trade.symbol, "entry_time": trade.entry_time.isoformat(), "reason": reason})
+            else: accepted.append(trade)
+        return accepted, rejected
+
     @staticmethod
     def _apply_replay_guardrails(
         proposed: Sequence[BacktestTrade],
@@ -358,7 +372,6 @@ class PortfolioReplayEngine:
         kept: list[BacktestTrade] = []
         rejected: list[dict] = []
         by_symbol_day: dict[tuple[object, str], list[BacktestTrade]] = {}
-        cooldown = timedelta(minutes=guardrails.reentry_cooldown_minutes)
 
         for trade in proposed:
             key = (
@@ -366,34 +379,9 @@ class PortfolioReplayEngine:
                 trade.symbol,
             )
             prior = by_symbol_day.setdefault(key, [])
-            reason = None
-
-            if (
-                guardrails.max_trades_per_symbol_day is not None
-                and len(prior) >= guardrails.max_trades_per_symbol_day
-            ):
-                reason = (
-                    "Replay guardrail: maximum trades per symbol/day reached "
-                    f"({guardrails.max_trades_per_symbol_day})."
-                )
-            elif (
-                guardrails.max_consecutive_losses_per_symbol_day is not None
-                and PortfolioReplayEngine._trailing_loss_count(prior)
-                >= guardrails.max_consecutive_losses_per_symbol_day
-            ):
-                reason = (
-                    "Replay guardrail: consecutive-loss limit reached for "
-                    f"this symbol/day ({guardrails.max_consecutive_losses_per_symbol_day})."
-                )
-            elif (
-                cooldown > timedelta(0)
-                and prior
-                and trade.entry_time < prior[-1].exit_time + cooldown
-            ):
-                reason = (
-                    "Replay guardrail: symbol re-entry cooldown still active "
-                    f"({guardrails.reentry_cooldown_minutes} minutes)."
-                )
+            reason = PortfolioReplayEngine._guardrail_reason(
+                trade, prior, guardrails
+            )
 
             if reason is not None:
                 rejected.append(
@@ -408,6 +396,41 @@ class PortfolioReplayEngine:
             kept.append(trade)
 
         return kept, rejected
+
+    @staticmethod
+    def _guardrail_reason(
+        trade: BacktestTrade,
+        prior: Sequence[BacktestTrade],
+        guardrails: ReplayGuardrails,
+    ) -> str | None:
+        if (
+            guardrails.max_trades_per_symbol_day is not None
+            and len(prior) >= guardrails.max_trades_per_symbol_day
+        ):
+            return (
+                "Replay guardrail: maximum trades per symbol/day reached "
+                f"({guardrails.max_trades_per_symbol_day})."
+            )
+        if (
+            guardrails.max_consecutive_losses_per_symbol_day is not None
+            and PortfolioReplayEngine._trailing_loss_count(prior)
+            >= guardrails.max_consecutive_losses_per_symbol_day
+        ):
+            return (
+                "Replay guardrail: consecutive-loss limit reached for "
+                f"this symbol/day ({guardrails.max_consecutive_losses_per_symbol_day})."
+            )
+        cooldown = timedelta(minutes=guardrails.reentry_cooldown_minutes)
+        if (
+            cooldown > timedelta(0)
+            and prior
+            and trade.entry_time < prior[-1].exit_time + cooldown
+        ):
+            return (
+                "Replay guardrail: symbol re-entry cooldown still active "
+                f"({guardrails.reentry_cooldown_minutes} minutes)."
+            )
+        return None
 
     @staticmethod
     def _trailing_loss_count(trades: Sequence[BacktestTrade]) -> int:
