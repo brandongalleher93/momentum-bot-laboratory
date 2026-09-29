@@ -94,6 +94,17 @@ checkpoint is a directional screen, not a statistical proof of profitability.
 Do not change the scheduled bot from this result alone. A favorable result
 would justify a separate approval and a further paper-only validation run.
 
+Use `scripts/reentry_forward_checkpoint.py` to track readiness without changing
+the evidence sources. It freezes the first 50 qualifying ledger trades, rejects
+the retrospective replay as forward evidence, and requires an exact-window
+paired replay created with `--role forward_checkpoint`. Missing audit or replay
+evidence remains pending; fewer than 15 later same-symbol opportunities in the
+completed fixed window makes the checkpoint inconclusive rather than extending
+the window after outcomes are known. The forward replay's required
+`--checkpoint-cutoff` is the timezone-aware exit timestamp of the fiftieth
+trade, preventing later opportunities from the same day from entering the
+frozen cohort.
+
 ## Controls and recovery
 
 No production schema migration, new dependency, paid feed, or order submission
