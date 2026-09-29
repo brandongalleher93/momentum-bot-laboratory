@@ -24,6 +24,16 @@ def main() -> None:
     parser.add_argument("--history", type=Path, required=True)
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument(
+        "--role",
+        choices=("retrospective_exploratory", "forward_checkpoint"),
+        default="retrospective_exploratory",
+    )
+    parser.add_argument(
+        "--checkpoint-cutoff",
+        type=datetime.fromisoformat,
+        help="Required timezone-aware exit timestamp for a forward checkpoint.",
+    )
     args = parser.parse_args()
 
     manifest_bytes = args.workspace.read_bytes()
@@ -40,6 +50,24 @@ def main() -> None:
     evaluation_end = datetime.combine(end_date, time.max, tzinfo=zone).astimezone(
         timezone.utc
     )
+    checkpoint_cutoff = args.checkpoint_cutoff
+    if args.role == "forward_checkpoint":
+        if checkpoint_cutoff is None or checkpoint_cutoff.tzinfo is None:
+            raise ValueError(
+                "Forward checkpoint replay requires a timezone-aware cutoff."
+            )
+        checkpoint_cutoff = checkpoint_cutoff.astimezone(timezone.utc)
+        if not evaluation_start <= checkpoint_cutoff <= evaluation_end:
+            raise ValueError(
+                "Forward checkpoint cutoff is outside the workspace window."
+            )
+        replay_end = checkpoint_cutoff
+    else:
+        if checkpoint_cutoff is not None:
+            raise ValueError(
+                "Checkpoint cutoff is only valid for a forward checkpoint replay."
+            )
+        replay_end = evaluation_end
     bars_by_symbol = {}
     for value in manifest["paths"]:
         path = Path(value)
@@ -75,7 +103,7 @@ def main() -> None:
         "source": "captured",
         "feed": manifest["feed"],
         "evaluation_start": evaluation_start,
-        "evaluation_end": evaluation_end,
+        "evaluation_end": replay_end,
         "evaluation_dates_by_symbol": dates_by_symbol,
     }
     print("Running baseline replay…", flush=True)
@@ -96,10 +124,11 @@ def main() -> None:
     report = {
         "generated_at": datetime.now(timezone.utc),
         "experiment": "one_entry_per_symbol_day",
-        "role": "retrospective_exploratory",
+        "role": args.role,
         "workspace_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
         "evaluation_start": start_date,
         "evaluation_end": end_date,
+        "checkpoint_cutoff": checkpoint_cutoff,
         "candidate_source": "captured",
         "feed": manifest["feed"],
         "coverage": coverage,
