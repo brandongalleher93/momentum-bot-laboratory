@@ -236,6 +236,11 @@ See [SHADOW_TESTING_REVIEW.md](SHADOW_TESTING_REVIEW.md) for the current
 forward-testing checkpoint, its evidence limits, and the next bounded research
 milestone.
 
+The one-entry experiment's private, read-only checkpoint progress can be
+measured with `python -m scripts.reentry_forward_checkpoint`. Provide the
+ignored shadow ledger and, when available, its SIP audit and exact-window
+forward paired-replay report; the command never changes trading behavior.
+
 See [SECURITY.md](SECURITY.md) for private vulnerability reporting and the
 local-data boundary.
 
