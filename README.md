@@ -34,7 +34,7 @@ below are not evidence of profitability or readiness for live trading.
 
 ### Dashboard overview
 
-![Momentum Bot Laboratory dashboard showing paper-only mode, disarmed order safety, system status, and recent decisions](Docs/Images/Dashboard-Overview.png)
+![Momentum Bot Laboratory dashboard showing paper-only mode, disarmed order safety, system status, and recent decisions](docs/Images/Dashboard-Overview.png)
 
 The dashboard provides an operational overview of the current experiment,
 paper-trading status, connection state, and recent strategy decisions while
@@ -42,7 +42,7 @@ keeping paper order submission visibly disarmed.
 
 ### Strategy analysis and decision reasoning
 
-![Strategy analysis table showing evaluated symbols, strategy modules, decision status, and rejection reasons](Docs/Images/Strategy-Analysis.png)
+![Strategy analysis table showing evaluated symbols, strategy modules, decision status, and rejection reasons](docs/Images/Strategy-Analysis.png)
 
 The decision table records how market observations move through scanner and
 strategy criteria, including explicit rejection reasons that make evaluation
@@ -50,7 +50,7 @@ outcomes easier to inspect.
 
 ### Configuration and risk controls
 
-![Configuration workspace showing adjustable account assumptions and paper-trading risk limits](Docs/Images/Configuration-Risk-Controls.png)
+![Configuration workspace showing adjustable account assumptions and paper-trading risk limits](docs/Images/Configuration-Risk-Controls.png)
 
 The configuration workspace exposes adjustable research and paper-trading
 parameters. Changes are validated before they apply to the GUI session, while
@@ -58,7 +58,7 @@ credentials and live-trading safety fields remain non-editable.
 
 #### Active shadow protections
 
-![Read-only active shadow protections showing position, loss, trading-window, data-source, and broker-order controls](Docs/Images/Active-Shadow-Protections.png)
+![Read-only active shadow protections showing position, loss, trading-window, data-source, and broker-order controls](docs/Images/Active-Shadow-Protections.png)
 
 The read-only protections view summarizes the controls enforced during
 real-time shadow simulation, including position and loss limits, the trading
@@ -66,7 +66,7 @@ window, and disabled broker-order submission.
 
 ### Execution and audit logs
 
-![Logs workspace showing event-source selection, severity filters, search, and structured audit records](Docs/Images/Execution-Logs.png)
+![Logs workspace showing event-source selection, severity filters, search, and structured audit records](docs/Images/Execution-Logs.png)
 
 The logs workspace filters structured decision and execution evidence by file,
 severity, and search text to support troubleshooting and traceable review while
@@ -120,6 +120,16 @@ history before publication:
 ```bash
 python scripts/audit_public_release.py --history
 ```
+
+## Project context
+
+- [PROJECT_STATE.md](PROJECT_STATE.md) records the current milestone, evidence
+  limits, and next bounded action.
+- [docs/ROADMAP.md](docs/ROADMAP.md) is the canonical milestone index.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) describes the implemented system,
+  data flows, integrations, and trust boundaries.
+- [AGENTS.md](AGENTS.md) routes agent work to the smallest sufficient context and
+  records project-specific approval boundaries.
 
 ## Local workflows
 
@@ -191,10 +201,10 @@ this repository before updating the runtime again.
 ```text
 assets/       Public branding used by the dashboard
 bot/          Strategy, safety, broker, backtest, history, and GUI code
-Docs/         Application screenshots used by this README
+docs/         Application screenshots used by this README
 examples/     Synthetic/sample inputs and a manual risk demonstration
 launcher/     Portable local macOS shadow-observation launcher
-scripts/      Public-release audit tooling
+scripts/      Public-release audit and bounded research/replay tooling
 tests/        Automated behavior and safety checks
 ```
 
@@ -232,14 +242,19 @@ browser tabs, notifications, and local file paths.
 - Experimental features and parameters require independent validation.
 - The bundled example inputs are demonstrations, not performance evidence.
 
-See [SHADOW_TESTING_REVIEW.md](SHADOW_TESTING_REVIEW.md) for the current
-forward-testing checkpoint, its evidence limits, and the next bounded research
-milestone.
+See [PROJECT_STATE.md](PROJECT_STATE.md) and
+[docs/ROADMAP.md](docs/ROADMAP.md) for the current milestone. The historical
+[SHADOW_TESTING_REVIEW.md](SHADOW_TESTING_REVIEW.md) preserves the public-safe
+52-trade checkpoint and its evidence limits.
 
 The one-entry experiment's private, read-only checkpoint progress can be
 measured with `python -m scripts.reentry_forward_checkpoint`. Provide the
 ignored shadow ledger and, when available, its SIP audit and exact-window
 forward paired-replay report; the command never changes trading behavior.
+The experiment protocol and predeclared gates are recorded in
+[REENTRY_EXPERIMENT_PLAN.md](REENTRY_EXPERIMENT_PLAN.md). This public repository
+does not establish the current maturity, readiness, or outcome of the separate
+private-runtime evidence.
 
 See [SECURITY.md](SECURITY.md) for private vulnerability reporting and the
 local-data boundary.

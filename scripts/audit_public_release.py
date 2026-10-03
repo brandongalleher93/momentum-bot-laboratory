@@ -48,7 +48,7 @@ TEXT_SUFFIXES = {
 }
 PUBLIC_IMAGE_SUFFIXES = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
 PUBLIC_IMAGE_ROOTS = {
-    ("Docs", "Images"),
+    ("docs", "Images"),
     ("assets", "branding"),
 }
 
