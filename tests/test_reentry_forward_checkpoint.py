@@ -166,6 +166,22 @@ class ForwardCheckpointReadinessTests(unittest.TestCase):
             self.assertTrue(report["gates"]["exact_forward_replay_window"])
             self.assertFalse(report["gates"]["complete_replay_coverage"])
 
+    def test_corrected_engine_cannot_validate_the_frozen_protocol(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger, rows = self._ledger(directory, 50)
+            audit = self._audit(directory, rows)
+            replay = self._replay(directory, later=20)
+            payload = json.loads(replay.read_text())
+            payload["protocol_compatible"] = False
+            payload["replay_engine_version"] = "projected_risk_v2"
+            replay.write_text(json.dumps(payload))
+            report = build_forward_checkpoint_readiness(
+                ledger, audit_path=audit, replay_report_path=replay
+            )
+            self.assertEqual(report["status"], "checkpoint_evidence_pending")
+            self.assertFalse(report["gates"]["exact_forward_replay_window"])
+            self.assertIsNone(report["decision"])
+
     def test_rejects_replay_that_extends_past_trade_50(self):
         with tempfile.TemporaryDirectory() as directory:
             ledger, rows = self._ledger(directory, 50)

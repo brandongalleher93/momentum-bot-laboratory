@@ -2,25 +2,39 @@
 
 ## Current Milestone
 
-- ID: `M-004`
-- Name: Fixed forward one-entry-per-symbol/day checkpoint
-- Status: `VALIDATING`
-- Evidence qualification: the public repository establishes that the protocol
-  and readiness evaluator are implemented. It does not establish the current
-  maturity, readiness, or outcome of private-runtime evidence.
+- ID: `M-005`
+- Name: Collect reproducible forward evidence
+- Status: `IMPLEMENTED — PROSPECTIVE ACCEPTANCE PENDING`
+- Evidence qualification: local synthetic validation does not establish that the
+  separate private runtime is collecting the new evidence. M-004 remains
+  unresolved under its original fixed checkpoint; its gates are not replaced.
 
 ## Current Objective
 
-Evaluate the frozen one-entry-per-symbol/Eastern-trading-day candidate at its
-predeclared 50-trade forward checkpoint without changing scheduled strategy or
-broker-order behavior.
+Prepare exact-input recording and baseline reproduction so existing background
+shadow collection can support a later strategy review. Preserve strategy rules,
+parameters, broker interlocks, scheduler, launcher, and original evidence.
 
 ## Current Work
 
-No source-code change is recorded as in progress. The public repository contains
-the checkpoint protocol and evaluator. Current evidence collection, audit
-maturity, replay coverage, and checkpoint outcome in the separate private
-runtime are unknown and must not be inferred.
+Implemented collection records normalized market inputs, cycle clocks,
+initial state, decisions, source/runtime versions, and bounded private journals.
+Completed segments reproduce through the same shadow engine with no network
+client. Health checks distinguish partial capture, errors, and full-session
+coverage. Earlier scanner-availability, fill-agreement, and portfolio-risk
+corrections are preserved. Existing unrelated research work remains untouched.
+
+Validation: 156 tests pass, including exact entry/exit reproduction, restart,
+CLI integration, evidence corruption, storage failure, and health checks.
+Configuration validation, public-tree/history audits, and whitespace checks
+pass. The history audit recognizes only the exact previously approved image
+blobs at their legacy case-sensitive paths.
+The requirements dependency audit reports no known vulnerabilities in its
+resolved packages. No dependency or scheduler change is included.
+
+Private runtime promotion is recorded in its own source manifest; prospective
+acceptance is still required. No new strategy
+experiment or parameter change is authorized by these diagnostic results.
 
 ## Last Completed
 
@@ -30,11 +44,11 @@ passed its dependency audit, public-tree audit, and 115-test suite.
 
 ## Next Action
 
-When the user explicitly authorizes inspection of the separate private runtime,
-run the read-only checkpoint evaluator against its current evidence without
-copying source data into this repository. Promote only a reviewed, public-safe
-aggregate status or result. Without that authority or evidence, ask the user for
-direction rather than inferring progress.
+Verify the first full prospective session before declaring M-005 complete.
+Private source promotion follows its ownership rules and source manifest;
+preserve configuration, RCS context, evidence, and existing scheduling.
+Predeclare any later strategy experiment separately; historical uncaptured
+inputs remain a known limit.
 
 ## Blockers and Unknowns
 
@@ -91,4 +105,6 @@ direction rather than inferring progress.
 
 ## Last Updated
 
-2026-10-03 — initialized during the approved RCS v1.0.0 migration.
+2026-11-22 — exact-input collection and same-engine baseline reproduction
+implemented; prospective acceptance remains pending and private source promotion
+is governed by its own manifest.

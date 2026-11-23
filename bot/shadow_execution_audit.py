@@ -105,6 +105,13 @@ class ExecutionAuditRow:
     sip_exit_bid: Decimal | None = None
     exit_price_difference: Decimal | None = None
     reconstruction: PricePathReconstruction | None = None
+    # Keep legacy classification stable for frozen research cohorts. Trigger
+    # agreement alone does not establish that the recorded exit price was fair.
+    exit_trigger_confirmed: bool | None = None
+    entry_fill_consistent: bool | None = None
+    exit_fill_consistent: bool | None = None
+    entry_price_difference_r: Decimal | None = None
+    exit_price_difference_r: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -138,6 +145,13 @@ class ExecutionAuditReport:
             Decimal("0"),
         )
         return {
+            "entry_fill_consistent_count": sum(row.entry_fill_consistent is True for row in self.rows),
+            "exit_fill_consistent_count": sum(row.exit_fill_consistent is True for row in self.rows),
+            "exit_fill_discrepant_count": sum(row.exit_fill_consistent is False for row in self.rows),
+            "confirmed_with_discrepant_exit_fill_count": sum(
+                row.status == "confirmed" and row.exit_fill_consistent is False
+                for row in self.rows
+            ),
             "ledger_trade_count": self.ledger_trade_count,
             "confirmed_count": len(confirmed),
             "discrepant_count": len(discrepant),
@@ -182,8 +196,9 @@ class ShadowExecutionAuditor:
             notes=(
                 "The shadow SQLite ledger is never modified by this audit.",
                 (
-                    "Confirmed rows have SIP evidence consistent with the "
-                    "recorded entry and exit."
+                    "Legacy confirmed status checks entry agreement and the exit "
+                    "trigger for price exits; it does not establish exit-fill agreement. "
+                    "Separate fill fields compare recorded prices with nearby SIP quotes."
                 ),
                 (
                     "Price-only reconstructions ignore VWAP, EMA, and "
@@ -276,6 +291,19 @@ class ShadowExecutionAuditor:
             sip_exit_bid=exit_quote.bid,
             exit_price_difference=exit_difference,
             reconstruction=reconstruction,
+            exit_trigger_confirmed=(exit_consistent if self._is_price_exit(trade) else None),
+            entry_fill_consistent=entry_consistent,
+            exit_fill_consistent=(
+                abs(exit_difference) <= self._price_tolerance(trade.entry_price)
+            ),
+            entry_price_difference_r=(
+                entry_difference * trade.quantity / trade.initial_risk
+                if trade.initial_risk > 0 else None
+            ),
+            exit_price_difference_r=(
+                exit_difference * trade.quantity / trade.initial_risk
+                if trade.initial_risk > 0 else None
+            ),
         )
 
     def _nearest_quote(self, symbol: str, timestamp: datetime) -> Quote | None:

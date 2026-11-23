@@ -25,6 +25,19 @@ existing SIP price-path reconstruction as a separate adjusted estimate. The
 reconstruction cannot recreate intervening VWAP, EMA, or breakout-close
 decisions and is not a replacement ledger.
 
+The execution audit now reports `entry_fill_consistent`,
+`exit_fill_consistent`, and `exit_trigger_confirmed` separately. The legacy
+`status` classification is preserved so this frozen diagnostic does not
+silently change cohorts. For stop and target exits, legacy confirmation tests
+the trigger rather than agreement with the recorded exit fill. Fill fields
+use the existing price tolerance and nearby quote window; missing evidence is
+unknown, not false. These fields are diagnostic measurements, not proof that
+an order could have executed at a particular price or size.
+Price differences are also reported in initial-risk units because a tolerance
+expressed as a percentage of share price can be large relative to a tight stop.
+Positive exit differences mean the nearby SIP bid exceeds the recorded fill;
+this is not automatically an error, for example when a target fill is capped.
+
 ## CS-001 hypothesis
 
 Protective-stop exits classified as discrepant by mature SIP quotes have a

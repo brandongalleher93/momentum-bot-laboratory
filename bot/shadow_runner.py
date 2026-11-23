@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import fcntl
 import signal
 import subprocess
 from contextlib import contextmanager
@@ -45,14 +46,30 @@ class ShadowRunner:
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
-        self.pid_path.write_text(f"{process.pid}\n", encoding="utf-8")
-        self.pid_path.chmod(0o600)
         return process.pid
 
     @contextmanager
     def register_current_process(self) -> Iterator[int]:
         """Expose a directly launched shadow process to dashboard controls."""
 
+        ensure_private_directory(self.directory)
+        lock_path = self.directory / "runner.lock"
+        ensure_private_file(lock_path)
+        lock = lock_path.open("a")
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            lock.close()
+            raise RuntimeError("Shadow observation is already running (process lock).") from exc
+        try:
+            with self._register_pid() as pid:
+                yield pid
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            lock.close()
+
+    @contextmanager
+    def _register_pid(self) -> Iterator[int]:
         pid = os.getpid()
         active = self.active_pid()
         if active is not None and active != pid:

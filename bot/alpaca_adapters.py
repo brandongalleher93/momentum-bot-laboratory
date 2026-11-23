@@ -251,6 +251,10 @@ class AlpacaMarketData:
             settings.alpaca_secret_key,
             paper=True,
         )
+        from bot.http_limits import bound_market_client
+
+        for client in (self.stock, self.screener, self.asset_client):
+            bound_market_client(client)
         self._scanner_cache_at: datetime | None = None
         self._scanner_cache: list[MarketSnapshot] = []
         self._universe_date: Any = None

@@ -196,6 +196,57 @@ first identified in the private runtime, reproduce the smallest reviewable fix
 here with synthetic fixtures, run the public-release audit, and publish it from
 this repository before updating the runtime again.
 
+## Reproducible shadow collection
+
+The shadow command records the exact normalized scanner snapshots, setup bars,
+and quotes delivered to the strategy, together with cycle clocks, initial ledger
+state, source and runtime versions, settings, and resulting decisions. These
+private journals live in ignored `output/shadow_evidence/`. Recording makes no
+additional market-data requests and does not enable orders or change strategy
+parameters. The existing schedule and launcher remain unchanged.
+
+After normal completion, the command reproduces the segment offline using the
+same shadow engine and a temporary ledger. It requires identical input-call
+ordering, diagnostics, armed setups, trade values, and cycle results. Generated
+identifiers and diagnostic creation wall-clock timestamps are excluded from
+comparison; strategy decision times and market timestamps are retained. No
+broker or network client is constructed by verification.
+
+```bash
+python -m scripts.collection_health
+python -m scripts.verify_shadow_evidence output/shadow_evidence/JOURNAL.sqlite3
+```
+
+`health.json` reports collection, degradation, verification, or failure. A
+completed segment gets a separate `.verified.json` report containing its hash.
+A reproduced segment is not necessarily a complete session: reports separately
+require the first cycle within two minutes of the configured start, coverage
+through the end, and no inter-cycle gap above two minutes for `complete_window`.
+These are collection-quality checks, not a strategy-success criterion. Earlier
+incomplete segments remain visible even when a later segment succeeds.
+
+Journals use owner-only files, compressed bounded records, a hash chain, and
+SQLite durable commits. Recording stops if a record exceeds 16 MiB, a cycle
+exceeds its input budget, a UTC day's journals exceed 512 MiB, or less than a
+1 GiB disk reserve remains. Evidence is never automatically deleted. Monitor
+storage and archive completed journals and verification reports privately;
+retain their matching source revision. Copy only finalized journals, and verify
+the copied journal before relying on the archive. A second disk or other
+approved backup destination is needed for protection against disk loss.
+
+A process lock prevents simultaneous CLI collectors. Market-data requests have
+10-second connection and 30-second read timeouts, with two SDK rate-limit retries.
+Provider-error segments, interruptions, missing inputs, version drift, unresolved
+open positions, and mismatches cannot qualify as reproduced baseline evidence.
+The installed SDK may handle some upstream failures internally; the journal
+captures the values or errors delivered at the application adapter boundary,
+not unseen provider responses.
+
+Historical observations without these inputs remain exploratory. The tape proves
+only the recorded baseline path; a candidate requiring unobserved market calls
+needs additional evidence and a separately declared experiment. No report
+licenses an automatic strategy or risk change.
+
 ## Repository structure
 
 ```text
@@ -251,6 +302,10 @@ The one-entry experiment's private, read-only checkpoint progress can be
 measured with `python -m scripts.reentry_forward_checkpoint`. Provide the
 ignored shadow ledger and, when available, its SIP audit and exact-window
 forward paired-replay report; the command never changes trading behavior.
+Captured paired replay requires retained scanner approval JSONL logs, supplied
+through `--scanner-diagnostics` or the dashboard comparison input. Missing
+availability evidence blocks replay; market-event timestamps are not approval
+times. Corrected comparisons remain exploratory.
 The experiment protocol and predeclared gates are recorded in
 [REENTRY_EXPERIMENT_PLAN.md](REENTRY_EXPERIMENT_PLAN.md). This public repository
 does not establish the current maturity, readiness, or outcome of the separate

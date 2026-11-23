@@ -223,6 +223,53 @@ class PortfolioReplayTests(unittest.TestCase):
             self.assertEqual(len(result.accepted_trades), 1)
             self.assertTrue(all(trade.symbol == "TEST" for trade in result.accepted_trades))
 
+    def test_portfolio_budget_includes_open_and_proposed_risk(self):
+        start = datetime(2026, 7, 10, 14, tzinfo=timezone.utc)
+        trades = [
+            self._trade(start, start + timedelta(minutes=5), "1", symbol="FIRST"),
+            self._trade(start + timedelta(seconds=1), start + timedelta(minutes=6), "1"),
+        ]
+        engine = PortfolioReplayEngine(
+            Settings(max_open_positions=2, max_daily_loss=Decimal("1.50")), None
+        )
+        kept, rejected = engine._apply_portfolio_gate(trades, ReplayGuardrails(), ZoneInfo("America/New_York"))
+        self.assertEqual(kept, trades[:1])
+        self.assertEqual(rejected[0]["reason"], "Projected daily risk exceeds the daily budget.")
+
+    def test_portfolio_budget_allows_equality_and_releases_closed_risk(self):
+        start = datetime(2026, 7, 10, 14, tzinfo=timezone.utc)
+        trades = [
+            self._trade(start, start + timedelta(minutes=1), "1", symbol="FIRST"),
+            self._trade(start + timedelta(seconds=1), start + timedelta(minutes=2), "1"),
+            self._trade(start + timedelta(minutes=1), start + timedelta(minutes=3), "1", symbol="THIRD"),
+        ]
+        engine = PortfolioReplayEngine(Settings(max_open_positions=2, max_daily_loss=Decimal("2")), None)
+        kept, rejected = engine._apply_portfolio_gate(trades, ReplayGuardrails(), ZoneInfo("America/New_York"))
+        self.assertEqual(kept, trades)
+        self.assertEqual(rejected, [])
+
+    def test_portfolio_budget_includes_realized_loss(self):
+        start = datetime(2026, 7, 10, 14, tzinfo=timezone.utc)
+        trades = [
+            self._trade(start, start + timedelta(seconds=30), "-1"),
+            self._trade(start + timedelta(minutes=1), start + timedelta(minutes=2), "1"),
+        ]
+        engine = PortfolioReplayEngine(Settings(max_daily_loss=Decimal("1.50")), None)
+        kept, rejected = engine._apply_portfolio_gate(trades, ReplayGuardrails(), ZoneInfo("America/New_York"))
+        self.assertEqual(kept, trades[:1])
+        self.assertIn("Projected daily risk", rejected[0]["reason"])
+
+    def test_portfolio_rejects_overlapping_same_symbol_engines(self):
+        start = datetime(2026, 7, 10, 14, tzinfo=timezone.utc)
+        trades = [
+            self._trade(start, start + timedelta(minutes=5), "1"),
+            self._trade(start + timedelta(minutes=1), start + timedelta(minutes=6), "1"),
+        ]
+        engine = PortfolioReplayEngine(Settings(max_open_positions=2), None)
+        kept, rejected = engine._apply_portfolio_gate(trades, ReplayGuardrails(), ZoneInfo("America/New_York"))
+        self.assertEqual(kept, trades[:1])
+        self.assertIn("already open", rejected[0]["reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

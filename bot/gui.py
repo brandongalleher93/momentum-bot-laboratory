@@ -53,6 +53,7 @@ from bot.historical_data import (
     load_workspace_manifest,
     save_workspace_manifest,
 )
+from bot.scanner_availability import load_scanner_approvals
 from bot.portfolio_backtest import (
     PortfolioReplayEngine,
     ReplayGuardrails,
@@ -2042,6 +2043,16 @@ def _historical_data(st, pd, settings: Settings) -> None:
                 st.rerun()
             except Exception as exc:
                 st.error(f"Portfolio replay failed: {_safe_error_text(exc)}")
+        scanner_diagnostic_paths = []
+        if paired_source == "captured":
+            scanner_diagnostic_text = st.text_area(
+                "Scanner approval logs (one local JSONL path per line)",
+                help="Include relevant archived decision logs. Missing approval evidence blocks replay.",
+            )
+            scanner_diagnostic_paths = [
+                Path(value.strip()).expanduser()
+                for value in scanner_diagnostic_text.splitlines() if value.strip()
+            ]
         if st.button(
             "Compare baseline with one entry per symbol/day",
             use_container_width=True,
@@ -2078,6 +2089,10 @@ def _historical_data(st, pd, settings: Settings) -> None:
                         if symbol in bars_by_symbol and Path(path).exists()
                     } or None,
                     "source": paired_source,
+                    "scanner_approvals": (
+                        load_scanner_approvals(scanner_diagnostic_paths)
+                        if paired_source == "captured" else None
+                    ),
                     "feed": workspace_feed,
                     "evaluation_start": evaluation_start,
                     "evaluation_end": evaluation_end,

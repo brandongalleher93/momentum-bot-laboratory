@@ -30,6 +30,7 @@ from bot.risk_manager import RiskManager
 from bot.scanner import MarketScanner
 from bot.security import ensure_private_file
 from bot.strategy import BullFlagStrategy, MicroPullbackStrategy
+from bot.shadow_evidence import EvidenceCaptureError, EvidenceSession
 
 
 def shadow_paper_settings(settings: Settings) -> Settings:
@@ -361,6 +362,7 @@ class ShadowPaperEngine:
         *,
         store: ShadowTradeStore | None = None,
         clock: Callable[[], datetime] | None = None,
+        evidence: EvidenceSession | None = None,
     ):
         validate_settings(settings, require_alpaca_keys=True)
         if settings.paper_order_submission_enabled:
@@ -392,8 +394,25 @@ class ShadowPaperEngine:
         self.exits = ExitManager(settings, self.diagnostics)
         self._armed_setups: dict[str, Setup] = {}
         self._last_scan_bucket: datetime | None = None
+        self.evidence = evidence
+        if evidence is not None:
+            evidence.attach(self)
 
     def run_once(self, now: datetime | None = None) -> dict:
+        if self.evidence is None:
+            return self._run_once(now)
+        self.evidence.begin(now)
+        try:
+            result = self._run_once(now)
+        except EvidenceCaptureError:
+            raise
+        except Exception as exc:
+            self.evidence.finish(error=exc)
+            raise
+        self.evidence.finish(result=result)
+        return result
+
+    def _run_once(self, now: datetime | None = None) -> dict:
         live_cycle = now is None
         now = now or self._clock()
         if now.tzinfo is None:
@@ -505,6 +524,8 @@ class ShadowPaperEngine:
             if local.time() >= self.settings.trade_window_start:
                 try:
                     self.run_once()
+                except EvidenceCaptureError:
+                    raise
                 except Exception as exc:
                     self.events.append(
                         {
@@ -872,6 +893,8 @@ class ShadowPaperEngine:
     ) -> Quote | None:
         try:
             return self.market_data.get_latest_quote(symbol)
+        except EvidenceCaptureError:
+            raise
         except Exception as exc:
             self.events.append(
                 {

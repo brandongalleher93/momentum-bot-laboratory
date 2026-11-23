@@ -92,8 +92,32 @@ instead of broker orders.
 - `bot/reentry_observed_screen.py` and `bot/reentry_forward_checkpoint.py`
   preserve the one-entry experiment's retrospective and fixed-forward gates.
 
+Captured portfolio replay requires separate retained scanner approval logs.
+`bot/scanner_availability.py` matches symbol, market cutoff, and scanner values
+to diagnostic creation times; missing evidence blocks replay. Market timestamps
+in history are preserved. The CLI fingerprints these logs and marks corrected
+comparisons incompatible with the original frozen checkpoint. This correction
+does not establish feed or execution-order equivalence.
+
 Research reports remain private, local artifacts. Reconstructions are estimates
 and cannot reproduce every intervening strategy decision.
+
+### Exact shadow evidence and reproduction
+
+`bot/shadow_evidence.py` wraps the existing shadow market-data interface. It
+records normalized inputs already requested by the runtime, exact cycle clocks,
+initial ledger state, decisions, and results. Reproduction invokes
+`ShadowPaperEngine` with a recorded-input adapter and temporary ledger, enforcing
+call-order equality rather than merging independent strategy proposals. Captured
+feed inputs therefore remain separate from historical SIP reconstruction.
+
+The CLI enables recording under the existing paper-only interlocks and a
+single-process lock. Completed segments are verified offline before their health
+status becomes verified. SQLite commits and a per-record hash chain expose
+interrupted or changed evidence; compressed records and disk budgets bound
+storage. Hashes detect inconsistency, not malicious rewriting by the local owner.
+`bot/collection_health.py` is a read-only diagnostic, not a scheduler or an
+order-control authority. The existing LaunchAgent and launcher are unchanged.
 
 ### Persistence and observability
 
