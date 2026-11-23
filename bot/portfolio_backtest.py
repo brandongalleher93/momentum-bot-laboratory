@@ -16,6 +16,7 @@ from bot.history_store import HistoryStore
 from bot.historical_data import TradeCache, TradeTape, TradeTick
 from bot.models import Bar
 from bot.review import calculate_metrics
+from bot.scanner_availability import ApprovalIndex, candidate_approval_times
 
 
 @dataclass(frozen=True)
@@ -86,7 +87,10 @@ class PortfolioReplayEngine:
         evaluation_end: datetime | None = None,
         evaluation_dates_by_symbol: Mapping[str, Collection[date]] | None = None,
         guardrails: ReplayGuardrails | None = None,
+        scanner_approvals: ApprovalIndex | None = None,
     ) -> PortfolioReplayResult:
+        if source == "captured" and scanner_approvals is None:
+            raise ValueError("Captured replay requires scanner approval-availability evidence.")
         guardrails = guardrails or ReplayGuardrails()
         loaded_symbols = {symbol.upper() for symbol, bars in bars_by_symbol.items() if bars}
         scoped_dates = (
@@ -101,28 +105,35 @@ class PortfolioReplayEngine:
             source=source,
             passed_only=True,
             symbols=loaded_symbols,
-            start_time=evaluation_start,
+            start_time=None if source == "captured" else evaluation_start,
             end_time=evaluation_end,
         )
         eastern = ZoneInfo(self.settings.timezone)
-        candidate_rows = [
-            row
-            for row in candidate_rows
-            if self.settings.trade_window_start
-            <= datetime.fromisoformat(row["timestamp"]).astimezone(eastern).time()
-            <= self.settings.trade_window_end
-            and (
-                scoped_dates is None
-                or datetime.fromisoformat(row["timestamp"])
-                .astimezone(eastern)
-                .date()
-                in scoped_dates.get(row["symbol"], set())
-            )
-        ]
-        candidate_symbols = {row["symbol"] for row in candidate_rows}
+        selected_rows = []
         pass_times: dict[str, set[datetime]] = {}
         for row in candidate_rows:
-            pass_times.setdefault(row["symbol"], set()).add(datetime.fromisoformat(row["timestamp"]))
+            if source == "captured":
+                assert scanner_approvals is not None
+                times = candidate_approval_times(row, scanner_approvals)
+            else:
+                times = {datetime.fromisoformat(row["timestamp"])}
+            eligible = {
+                stamp for stamp in times
+                if (evaluation_start is None or stamp >= evaluation_start)
+                and (evaluation_end is None or stamp <= evaluation_end)
+                and self.settings.trade_window_start
+                <= stamp.astimezone(eastern).time() <= self.settings.trade_window_end
+                and (
+                    scoped_dates is None
+                    or stamp.astimezone(eastern).date()
+                    in scoped_dates.get(row["symbol"], set())
+                )
+            }
+            if eligible:
+                selected_rows.append(row)
+                pass_times.setdefault(row["symbol"], set()).update(eligible)
+        candidate_rows = selected_rows
+        candidate_symbols = {row["symbol"] for row in candidate_rows}
         proposed: list[BacktestTrade] = []
         strategy_diagnostics: list[dict] = []
         for symbol in sorted(candidate_symbols & set(bars_by_symbol)):
@@ -273,6 +284,7 @@ class PortfolioReplayEngine:
         )
         notes = [
             "Candidate universe source: " + source,
+            "Captured eligibility uses recorded scanner approval times; reconstructed eligibility uses market times.",
             f"Loaded symbols: {', '.join(sorted(loaded_symbols)) or 'none'}.",
             f"Scanner-passing symbols: {', '.join(sorted(candidate_symbols)) or 'none'}.",
             (
@@ -318,6 +330,7 @@ class PortfolioReplayEngine:
         if timestamps:
             replay_config = self.settings.snapshot()
             replay_config["replay_guardrails"] = guardrails.snapshot()
+            replay_config["scanner_clock"] = "approval_timestamp_v1" if source == "captured" else "market_timestamp"
             self.store.record_replay({"run_id":run_id,"created_at":datetime.now(timezone.utc).isoformat(),"source":source,"feed":feed,"start_time":min(timestamps).isoformat(),"end_time":max(timestamps).isoformat(),"symbol_count":len(result.symbols),"candidate_count":result.candidate_count,"trade_count":len(accepted),"config":replay_config,"metrics":metrics,"notes":notes})
         return result
 
@@ -351,6 +364,15 @@ class PortfolioReplayEngine:
                     reason = "Maximum open positions reached."
                 elif realized_loss >= self.settings.max_daily_loss:
                     reason = "Daily loss limit already reached."
+                elif any(value.symbol == trade.symbol for value in overlapping):
+                    reason = "A position in this symbol is already open."
+                elif (
+                    realized_loss
+                    + sum((value.initial_risk for value in overlapping), Decimal("0"))
+                    + trade.initial_risk
+                    > self.settings.max_daily_loss
+                ):
+                    reason = "Projected daily risk exceeds the daily budget."
                 elif (
                     self.settings.max_trades_per_day is not None
                     and len(day_trades) >= self.settings.max_trades_per_day

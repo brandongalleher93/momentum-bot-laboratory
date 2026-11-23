@@ -25,6 +25,18 @@ class ShadowRunnerTests(unittest.TestCase):
                     )
                 self.assertFalse(runner.pid_path.exists())
 
+    def test_process_lock_blocks_racing_starts_and_releases_on_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first = ShadowRunner(Path(directory), "python", Path(directory))
+            second = ShadowRunner(Path(directory), "python", Path(directory))
+            with patch.object(first, "active_pid", return_value=None), patch.object(second, "active_pid", return_value=None):
+                with first.register_current_process():
+                    with self.assertRaisesRegex(RuntimeError, "process lock"):
+                        with second.register_current_process():
+                            self.fail("Concurrent collector acquired the lock.")
+                with second.register_current_process():
+                    pass
+
     def test_registered_current_process_refuses_duplicate_runner(self):
         with tempfile.TemporaryDirectory() as directory:
             runner = ShadowRunner(

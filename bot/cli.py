@@ -227,27 +227,27 @@ def main(argv: list[str] | None = None) -> int:
             shadow_paper_settings,
         )
 
-        settings = shadow_paper_settings(settings)
-        data = AlpacaMarketData(settings)
-        engine = ShadowPaperEngine(settings, data)
-        if args.once:
-            print(
-                json.dumps(
-                    to_json_safe(engine.run_once()),
-                    indent=2,
-                    sort_keys=True,
-                )
-            )
-        else:
-            from bot.shadow_runner import ShadowRunner
+        from bot.shadow_evidence import EvidenceSession, verify_shadow_journal
+        from bot.shadow_runner import ShadowRunner
 
-            runner = ShadowRunner(
-                settings.output_dir,
-                sys.executable,
-                PROJECT_ROOT,
-            )
-            with runner.register_current_process():
+        settings = shadow_paper_settings(settings)
+        runner = ShadowRunner(settings.output_dir, sys.executable, PROJECT_ROOT)
+        with runner.register_current_process():
+            evidence = EvidenceSession(settings.output_dir / "shadow_evidence")
+            data = AlpacaMarketData(settings)
+            engine = ShadowPaperEngine(settings, data, evidence=evidence)
+            if args.once:
+                print(json.dumps(to_json_safe(engine.run_once()), indent=2, sort_keys=True))
+            else:
                 engine.run_forever()
+            evidence.close()
+            try:
+                verification = verify_shadow_journal(evidence.journal.path)
+            except Exception:
+                evidence.write_health("verification_failed")
+                raise
+            evidence.write_health("verified", verification=verification)
+            print(json.dumps(verification, sort_keys=True))
         return 0
 
     if args.command == "backtest":

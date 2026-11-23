@@ -142,6 +142,45 @@ class ShadowExecutionAuditTests(unittest.TestCase):
             summary["estimated_sip_path_net_profit"], Decimal("2.00")
         )
 
+    def test_confirmed_trigger_does_not_confirm_a_bad_exit_fill(self):
+        trade = make_trade(self.entry_time, exit_price=Decimal("4.50"))
+        provider = FakeHistoricalQuoteProvider({"TEST": [
+            Quote("TEST", trade.entry_time, Decimal("4.98"), Decimal("5.00")),
+            Quote("TEST", trade.exit_time, Decimal("4.90"), Decimal("4.92")),
+        ]})
+        report = ShadowExecutionAuditor(self.settings, provider).audit(
+            [trade], now=self.audit_time
+        )
+        row = report.rows[0]
+        self.assertEqual(row.status, "confirmed")  # Frozen legacy classification.
+        self.assertTrue(row.exit_trigger_confirmed)
+        self.assertTrue(row.entry_fill_consistent)
+        self.assertFalse(row.exit_fill_consistent)
+        self.assertEqual(row.exit_price_difference, Decimal("0.40"))
+        self.assertEqual(row.exit_price_difference_r, Decimal("4"))
+        self.assertEqual(row.entry_price_difference_r, Decimal("0"))
+        self.assertEqual(report.summary()["confirmed_with_discrepant_exit_fill_count"], 1)
+
+    def test_unresolved_fill_evidence_remains_unknown(self):
+        report = ShadowExecutionAuditor(
+            self.settings, FakeHistoricalQuoteProvider({})
+        ).audit([make_trade(self.entry_time)], now=self.audit_time)
+        self.assertIsNone(report.rows[0].exit_trigger_confirmed)
+        self.assertIsNone(report.rows[0].exit_fill_consistent)
+        self.assertIsNone(report.rows[0].entry_fill_consistent)
+
+    def test_indicator_exit_has_no_price_trigger_classification(self):
+        trade = make_trade(self.entry_time, exit_reason="VWAP lost.")
+        provider = FakeHistoricalQuoteProvider({"TEST": [
+            Quote("TEST", trade.entry_time, Decimal("4.98"), Decimal("5.00")),
+            Quote("TEST", trade.exit_time, Decimal("4.90"), Decimal("4.92")),
+        ]})
+        row = ShadowExecutionAuditor(self.settings, provider).audit(
+            [trade], now=self.audit_time
+        ).rows[0]
+        self.assertIsNone(row.exit_trigger_confirmed)
+        self.assertTrue(row.exit_fill_consistent)
+
     def test_recent_or_missing_sip_evidence_remains_unresolved(self):
         trade = make_trade(self.entry_time)
         provider = FakeHistoricalQuoteProvider({})

@@ -205,13 +205,41 @@ def _audit_tree(errors: list[str]) -> None:
         errors.append("bot/alpaca_adapters.py: no TradingClient safety check was possible")
 
 
+# These exact public assets were relocated by a case-only documentation rename.
+# Keep the exception history-only and pinned to reviewed blob identities.
+LEGACY_PUBLIC_IMAGE_BLOBS = {
+    "Active-Shadow-Protections.png": "866303dfdadfa4a4e2e0831f4e6350349b0eb3db",
+    "Configuration-Risk-Controls.png": "4097d9d97c2e9879a638696affeb7866c1b0d783",
+    "Dashboard-Overview.png": "b819f556ffb10892214e50ca4b86af5ad165b06c",
+    "Execution-Logs.png": "c371c9a248497c3d7c55f17de3b8900e0713451d",
+    "Strategy-Analysis.png": "84ac85f3beac7d59be1dcabbbfa2a61381944021",
+}
+
+
+def _approved_legacy_image(value: str) -> bool:
+    path = Path(value)
+    expected = LEGACY_PUBLIC_IMAGE_BLOBS.get(path.name)
+    if path.parts[:2] != ("Docs", "Images") or len(path.parts) != 3 or not expected:
+        return False
+    found = False
+    for commit in _git("log", "--all", "--format=%H", "--", value).splitlines():
+        entry = _git("ls-tree", commit, "--", value).strip()
+        if not entry:  # A relocation/deletion commit has no old-path entry.
+            continue
+        metadata, name = entry.split("\t", 1)
+        if name != value or metadata != f"100644 blob {expected}":
+            return False
+        found = True
+    return found
+
+
 def _audit_history(errors: list[str]) -> None:
     names = _git("log", "--all", "--name-only", "--format=")
     for value in sorted(set(names.splitlines())):
         if not value:
             continue
         path = ROOT / value
-        if _is_forbidden_path(path):
+        if _is_forbidden_path(path) and not _approved_legacy_image(value):
             errors.append(
                 f"Git history: private/generated path was committed: {value}"
             )

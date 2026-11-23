@@ -159,6 +159,8 @@ def _replay_evidence(
         window_issues.append("Replay experiment does not match the declared candidate.")
     if replay.get("role") != "forward_checkpoint":
         window_issues.append("Replay role is not forward_checkpoint.")
+    if replay.get("protocol_compatible") is False:
+        window_issues.append("Replay engine changed from the frozen protocol; a new predeclared comparison is required.")
     if replay.get("evaluation_start") != start_date.isoformat():
         window_issues.append("Replay start does not match the fixed checkpoint start.")
     expected_end = checkpoint_end_date.isoformat() if checkpoint_end_date else None

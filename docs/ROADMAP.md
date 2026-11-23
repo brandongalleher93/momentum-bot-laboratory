@@ -92,7 +92,43 @@ existing work and do not claim to be historical identifiers.
     be copied into this repository.
 - Authoritative protocol: `REENTRY_EXPERIMENT_PLAN.md`.
 
+## M-005: Collect reproducible forward evidence
+
+- Status: `IMPLEMENTED — PROSPECTIVE ACCEPTANCE PENDING`
+- Objective: resume the existing background shadow collection with exact inputs
+  sufficient to reproduce its own baseline decisions before strategy review.
+- Deliverables:
+  - private, bounded input/clock/state journals with source/runtime provenance;
+  - offline reproduction through the same shadow engine;
+  - health reporting, incomplete-segment detection, and full-session coverage
+    classification;
+  - unchanged strategy, broker interlocks, scheduler, and launcher.
+- Exit criteria:
+  - synthetic entry/exit, restart, denial, corruption, missing input, version
+    drift, disk failure, and partial-session checks pass;
+  - accepted public source is separately promoted with private-owned files and
+    runtime artifacts preserved;
+  - the first prospective full session reproduces its baseline exactly, has no
+    unresolved evidence errors or positions, and meets the declared collection
+    coverage checks;
+  - any gaps remain explicit; a separate strategy experiment is predeclared
+    before interpreting candidate outcomes.
+- Current limits: no prospective journal exists for this new instrument yet;
+  past uncaptured IEX responses cannot be recovered from SIP reconstruction.
+- Authority: `REENTRY_EXPERIMENT_PLAN.md`; operational instructions: `README.md`.
+
 ## Deferred and Unresolved
+
+- Captured replay now requires retained scanner approval-availability evidence;
+  missing or invalid evidence blocks comparison. Feed/input equivalence and
+  chronological runtime parity remain unresolved prerequisites for a newly
+  declared prospective experiment. This does not change M-004 acceptance gates.
+
+- Execution/replay tooling separates fill agreement from trigger confirmation
+  and corrects portfolio risk accounting. Corrected-engine comparisons remain
+  exploratory; M-004's frozen acceptance gates are not redefined by those
+  results. Private runtime promotion is governed by its source manifest.
+  See `REENTRY_EXPERIMENT_PLAN.md`.
 
 - Resume CS-001 validation only from
   `CONFIRMED_STOP_DIAGNOSTIC_PLAN.md`; its implementation is complete but its
